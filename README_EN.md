@@ -71,20 +71,39 @@ sudo docker run -d \
 The parameters you need to pay attention to are as follows:
 
 **Parameters**
-- **EXTERNAL_IP**: The server’s public IP. This corresponds to **Server Address** in the CrossDesk client’s **Self-Hosted Server Configuration**.
-- **INTERNAL_IP**: The server’s internal IP.
-- **CROSSDESK_SERVER_PORT**: The port used by the self-hosted service. This corresponds to **Server Port** in the CrossDesk client’s **Self-Hosted Server Configuration**.
-- **COTURN_PORT**: The port used by the COTURN service. This corresponds to **Relay Service Port** in the CrossDesk client’s **Self-Hosted Server Configuration**.
+- **EXTERNAL_IP**: The server's public IP. This corresponds to **Server Address** in the CrossDesk client's **Self-Hosted Server Configuration**.
+- **EXTERNAL_HOST**: The server's domain name (optional), used instead of EXTERNAL_IP. When set, it automatically resolves the domain to an IP address and automatically updates configuration and restarts services when the domain's IP changes. Ideal for dynamic IP or DDNS scenarios.
+- **INTERNAL_IP**: The server's internal IP.
+- **CROSSDESK_SERVER_PORT**: The port used by the self-hosted service. This corresponds to **Server Port** in the CrossDesk client's **Self-Hosted Server Configuration**.
+- **COTURN_PORT**: The port used by the COTURN service. This corresponds to **Relay Service Port** in the CrossDesk client's **Self-Hosted Server Configuration**.
 - **MIN_PORT / MAX_PORT**: The port range used by the COTURN service. Example: `MIN_PORT=50000`, `MAX_PORT=60000`. Adjust the range depending on the number of clients.
 - `-v /var/lib/crossdesk:/var/lib/crossdesk`: Persists database and certificate files on the host machine.
 - `-v /var/log/crossdesk:/var/log/crossdesk`: Persists log files on the host machine.
 
-**Example**:
+**Note**: Use either EXTERNAL_IP or EXTERNAL_HOST. EXTERNAL_HOST is recommended for automatic IP updates.
+
+**Example 1: Using Static IP Address**
 ```bash
 sudo docker run -d \
   --name crossdesk_server \
   --network host \
   -e EXTERNAL_IP=114.114.114.114 \
+  -e INTERNAL_IP=10.0.0.1 \
+  -e CROSSDESK_SERVER_PORT=9099 \
+  -e COTURN_PORT=3478 \
+  -e MIN_PORT=50000 \
+  -e MAX_PORT=60000 \
+  -v /var/lib/crossdesk:/var/lib/crossdesk \
+  -v /var/log/crossdesk:/var/log/crossdesk \
+  crossdesk/crossdesk-server:v1.1.3
+```
+
+**Example 2: Using Domain Name (Recommended for Dynamic IP)**
+```bash
+sudo docker run -d \
+  --name crossdesk_server \
+  --network host \
+  -e EXTERNAL_HOST=example.com \
   -e INTERNAL_IP=10.0.0.1 \
   -e CROSSDESK_SERVER_PORT=9099 \
   -e COTURN_PORT=3478 \

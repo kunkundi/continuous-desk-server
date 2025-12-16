@@ -73,20 +73,39 @@ sudo docker run -d \
 上述命令中，用户需注意的参数如下：
 
 **参数**
-- EXTERNAL_IP：服务器公网 IP , 对应 CrossDesk 客户端**自托管服务器配置**中填写的**服务器地址**
+- EXTERNAL_IP：服务器公网 IP，对应 CrossDesk 客户端**自托管服务器配置**中填写的**服务器地址**
+- EXTERNAL_HOST：服务器域名（可选），用于替代 EXTERNAL_IP。设置后会自动解析域名为 IP 地址，并在域名 IP 变化时自动更新配置并重启服务。适用于动态 IP 或使用 DDNS 的场景
 - INTERNAL_IP：服务器内网 IP
 - CROSSDESK_SERVER_PORT：自托管服务使用的端口，对应 CrossDesk 客户端**自托管服务器配置**中填写的**服务器端口**
-- COTURN_PORT: COTURN 服务使用的端口, 对应 CrossDesk 客户端**自托管服务器配置**中填写的**中继服务端口**
-- MIN_PORT/MAX_PORT：COTURN 服务使用的端口范围，例如：MIN_PORT=50000, MAX_PORT=60000，范围可根据客户端数量调整。
+- COTURN_PORT：COTURN 服务使用的端口，对应 CrossDesk 客户端**自托管服务器配置**中填写的**中继服务端口**
+- MIN_PORT/MAX_PORT：COTURN 服务使用的端口范围，例如：MIN_PORT=50000, MAX_PORT=60000，范围可根据客户端数量调整
 - `-v /var/lib/crossdesk:/var/lib/crossdesk`：持久化数据库和证书文件到宿主机
 - `-v /var/log/crossdesk:/var/log/crossdesk`：持久化日志文件到宿主机
 
-**示例**：
+**注意**：EXTERNAL_IP 和 EXTERNAL_HOST 二选一即可，优先推荐使用 EXTERNAL_HOST（支持自动 IP 更新）
+
+**示例 1：使用固定 IP 地址**
 ```bash
 sudo docker run -d \
   --name crossdesk_server \
   --network host \
   -e EXTERNAL_IP=114.114.114.114 \
+  -e INTERNAL_IP=10.0.0.1 \
+  -e CROSSDESK_SERVER_PORT=9099 \
+  -e COTURN_PORT=3478 \
+  -e MIN_PORT=50000 \
+  -e MAX_PORT=60000 \
+  -v /var/lib/crossdesk:/var/lib/crossdesk \
+  -v /var/log/crossdesk:/var/log/crossdesk \
+  crossdesk/crossdesk-server:v1.1.3
+```
+
+**示例 2：使用域名（推荐，支持动态 IP）**
+```bash
+sudo docker run -d \
+  --name crossdesk_server \
+  --network host \
+  -e EXTERNAL_HOST=example.com \
   -e INTERNAL_IP=10.0.0.1 \
   -e CROSSDESK_SERVER_PORT=9099 \
   -e COTURN_PORT=3478 \
