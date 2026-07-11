@@ -3,8 +3,8 @@ set -e
 
 # 检查参数
 if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
-    echo "Usage: $0 <SERVER_IP> [OUTPUT_DIR]"
-    echo "  SERVER_IP: IP address for the certificate"
+    echo "Usage: $0 <SERVER_ADDR> [OUTPUT_DIR]"
+    echo "  SERVER_ADDR: public IP address or domain name for the certificate"
     echo "  OUTPUT_DIR: Directory to save certificates (default: current directory)"
     exit 1
 fi
@@ -29,6 +29,22 @@ SAN_CONF="$OUTPUT_DIR/san.cnf"
 
 # 证书主题
 SUBJ="/C=CN/ST=Zhejiang/L=Hangzhou/O=CrossDesk/OU=CrossDesk/CN=$SERVER_IP"
+
+# Determine whether SERVER_ADDR is an IPv4 address or a domain name, and build
+# the appropriate subjectAltName value. WebRTC/TURN clients validate the cert
+# SAN, so for a domain we emit DNS:<domain> (and also the resolved IP when the
+# domain can be resolved at cert-generation time, so connecting by IP still works).
+if [[ "$SERVER_IP" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+  # Literal IPv4 address
+  SAN_VALUE="IP:$SERVER_IP"
+else
+  # Treat as a domain name / hostname
+  SAN_VALUE="DNS:$SERVER_IP"
+  RESOLVED_IP=$(getent ahostsv4 "$SERVER_IP" 2>/dev/null | awk '{print $1; exit}')
+  if [ -n "$RESOLVED_IP" ]; then
+    SAN_VALUE="$SAN_VALUE,IP:$RESOLVED_IP"
+  fi
+fi
 
 # 1. 生成根证书
 echo "Generating root private key..."
@@ -62,7 +78,7 @@ OU = CrossDesk
 CN = $SERVER_IP
 
 [ req_ext ]
-subjectAltName = IP:$SERVER_IP
+subjectAltName = $SAN_VALUE
 EOL
 
 # 5. 用根证书签发服务器证书（包含 SAN）

@@ -73,8 +73,8 @@ sudo docker run -d \
 上述命令中，用户需注意的参数如下：
 
 **参数**
-- EXTERNAL_IP：服务器公网 IP , 对应 CrossDesk 客户端**自托管服务器配置**中填写的**服务器地址**
-- INTERNAL_IP：服务器内网 IP
+- EXTERNAL_IP：服务器公网 IP **或域名**，对应 CrossDesk 客户端**自托管服务器配置**中填写的**服务器地址**。填域名（如 `desk.example.com`）时，容器启动时会自动把域名解析为 IP 注入 TURN 的 `external-ip`（ICE 候选仍需 IP），证书则以 `DNS:` 形式写入 SAN，客户端据此信任该域名。
+- INTERNAL_IP：服务器内网 IP（绑定地址，必须是 IP，不能是域名）
 - CROSSDESK_SERVER_PORT：自托管服务使用的端口，对应 CrossDesk 客户端**自托管服务器配置**中填写的**服务器端口**
 - COTURN_PORT: COTURN 服务使用的端口, 对应 CrossDesk 客户端**自托管服务器配置**中填写的**中继服务端口**
 - MIN_PORT/MAX_PORT：COTURN 服务使用的端口范围，例如：MIN_PORT=50000, MAX_PORT=60000，范围可根据客户端数量调整。
@@ -114,6 +114,29 @@ sudo docker run -d \
 sudo mkdir -p /var/lib/crossdesk /var/log/crossdesk
 sudo chown -R $(id -u):$(id -g) /var/lib/crossdesk /var/log/crossdesk
 ```
+
+### 使用域名（EXTERNAL_IP 支持域名）
+
+`EXTERNAL_IP` 既可以是公网 IP（如 `114.114.114.114`），也可以是域名（如 `desk.example.com`）。启用域名时：
+
+- **证书**：启动时自动生成的 TLS 证书会把域名写入 `subjectAltName` 的 `DNS:` 条目（并尽量附带解析出的公网 IP），客户端据此信任该域名，无需再手动信任 IP。
+- **TURN / ICE**：WebRTC 的 ICE 候选地址必须是 IP，因此容器启动时会用 `getent` 把域名解析为 IP，注入 coturn 的 `external-ip`；中继流量仍走该公网 IP。
+- **客户端**：CrossDesk 客户端「自托管服务器配置 → 服务器地址」直接填该域名即可（客户端本就支持域名，会自动 DNS 解析连信令）。
+
+#### 免重建镜像部署（推荐先这样验证）
+
+仓库内置 `docker-compose.yml`，把修改后的 `docker/start.sh` 与 `docker/generate_certs.sh` 直接挂载进官方镜像的固定路径（`/start.sh`、`/docker/generate_certs.sh`），**无需重新构建镜像**即可使用域名能力：
+
+```bash
+# 修改 docker-compose.yml 中的 EXTERNAL_IP / INTERNAL_IP 后
+docker compose up -d
+```
+
+注意：
+
+- 从「仅 IP」切换为「域名」后，需删除已持久化的证书目录（默认 `./crossdesk-data/certs`）再 `up`，才会以 `DNS:` SAN 重新生成证书（`start.sh` 发现证书已存在会跳过生成）。
+- 挂载的脚本文件必须是 **LF 换行**（CRLF 在 Linux 容器内会报 `bad interpreter`）。
+- 若从源码 `docker build` 构建镜像，域名支持已包含在 `docker/start.sh` 与 `docker/generate_certs.sh` 中，正常构建即可。
 
 ## 服务状态接口
 

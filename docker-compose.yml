@@ -1,0 +1,51 @@
+# CrossDesk-Server —— 免重建镜像部署（EXTERNAL_IP 支持域名）
+#
+# 用法：
+#   1. 按需修改下方的 environment（EXTERNAL_IP / INTERNAL_IP 等）
+#   2. docker compose up -d
+#
+# 原理：
+#   把仓库内已修改后的 docker/start.sh 与 docker/generate_certs.sh 直接挂载进
+#   官方镜像的固定路径（/start.sh、/docker/generate_certs.sh），无需重新构建镜像
+#   即可使用「EXTERNAL_IP 支持域名」的能力。
+#
+# 关键点：
+#   - entrypoint 显式用 /bin/bash 调用 /start.sh，规避 Windows 下挂载文件丢失
+#     可执行位导致的 permission denied。
+#   - EXTERNAL_IP 可填公网 IP（1.2.3.4）或域名（desk.example.com）。填域名时会在
+#     容器启动时经 getent 解析为 IP 注入 coturn 的 external-ip（ICE 仍需 IP）；
+#     证书则以 DNS: 形式写入 SAN。
+#   - 证书在首次启动后持久化到 ./crossdesk-data/certs。若从「仅 IP」切换为「域名」，
+#     需先删除该目录再 up，才会以 DNS: SAN 重新生成证书（start.sh 发现证书已存在会跳过）。
+#   - 挂载的脚本必须是 LF 换行（CRLF 在 Linux 容器内会报 bad interpreter）。
+#
+# 网络说明：
+#   下方为桥接 + 端口映射（兼容 Docker Desktop for Windows/Mac）。
+#   若运行在原生 Linux Docker 且想用 host 网络（与官方 README 一致），可改为：
+#     network_mode: host
+#     # 并删除 ports 段，把 INTERNAL_IP 设为服务器内网 IP（如 10.0.0.1）
+
+services:
+  crossdesk-server:
+    image: crossdesk/crossdesk-server:v1.1.3
+    container_name: crossdesk_server
+    restart: unless-stopped
+    # 显式用 bash 调用挂载进来的 start.sh（绕过挂载文件可执行位丢失的问题）
+    entrypoint: ["/bin/bash", "/start.sh"]
+    environment:
+      EXTERNAL_IP: "desk.example.com"   # 公网 IP(1.2.3.4) 或域名(desk.example.com)
+      INTERNAL_IP: "0.0.0.0"            # 桥接模式下 coturn 监听所有容器接口
+      CROSSDESK_SERVER_PORT: "9099"
+      COTURN_PORT: "3478"
+      MIN_PORT: "50000"
+      MAX_PORT: "60000"
+    ports:
+      - "9099:9099/tcp"                  # 信令 / 管理 HTTPS
+      - "3478:3478/tcp"
+      - "3478:3478/udp"
+      - "50000-60000:50000-60000/udp"    # TURN 媒体端口范围
+    volumes:
+      - ./docker/start.sh:/start.sh
+      - ./docker/generate_certs.sh:/docker/generate_certs.sh
+      - ./crossdesk-data:/var/lib/crossdesk   # 持久化数据库与证书
+      - ./crossdesk-logs:/var/log/crossdesk   # 持久化日志

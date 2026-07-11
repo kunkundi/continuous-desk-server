@@ -20,8 +20,29 @@ is_uint() {
 # check environment variables
 if [ -z "$EXTERNAL_IP" ] || [ -z "$INTERNAL_IP" ]; then
   echo "Error: EXTERNAL_IP and INTERNAL_IP must be set."
-  echo "Example: docker run -e EXTERNAL_IP=1.2.3.4 -e INTERNAL_IP=10.0.0.5 crossdesk-server"
+  echo "EXTERNAL_IP may be a public IP (e.g. 1.2.3.4) or a domain name (e.g. desk.example.com)."
+  echo "Example: docker run -e EXTERNAL_IP=desk.example.com -e INTERNAL_IP=10.0.0.5 crossdesk-server"
   exit 1
+fi
+
+# Resolve EXTERNAL_IP to a literal IPv4 address for coturn's external-ip.
+# WebRTC ICE candidates require an IP, not a domain, so if EXTERNAL_IP is a
+# domain name we resolve it once at startup via getent (glibc, always present
+# on the ubuntu:22.04 base image). The original value is still passed to
+# generate_certs.sh so the certificate gets a DNS: SAN for the domain.
+is_ipv4() {
+  [[ "$1" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]
+}
+
+if is_ipv4 "$EXTERNAL_IP"; then
+  EXTERNAL_IP_RESOLVED="$EXTERNAL_IP"
+else
+  EXTERNAL_IP_RESOLVED=$(getent ahostsv4 "$EXTERNAL_IP" 2>/dev/null | awk '{print $1; exit}')
+  if [ -z "$EXTERNAL_IP_RESOLVED" ]; then
+    echo "Error: Unable to resolve EXTERNAL_IP domain '$EXTERNAL_IP' to an IPv4 address."
+    exit 1
+  fi
+  echo "Resolved EXTERNAL_IP domain '$EXTERNAL_IP' -> '$EXTERNAL_IP_RESOLVED'"
 fi
 
 if [ -z "$COTURN_PORT" ]; then
@@ -82,7 +103,7 @@ cat > "$CONF_FILE" <<EOF
 # coturn auto-generated configuration
 listening-port=${COTURN_PORT}
 listening-ip=${INTERNAL_IP}
-external-ip=${EXTERNAL_IP}
+external-ip=${EXTERNAL_IP_RESOLVED}
 min-port=${MIN_PORT}
 max-port=${MAX_PORT}
 verbose
