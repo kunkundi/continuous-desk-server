@@ -18,6 +18,27 @@ bool GetStringField(const json& j, const char* key, std::string& value) {
   return true;
 }
 
+bool CopyOptionalIceUfrag(const json& source, json& destination) {
+  const auto field = source.find("ufrag");
+  if (field == source.end()) {
+    return true;
+  }
+  if (!field->is_string()) {
+    return false;
+  }
+
+  // Match the client's bounds without rewriting the ICE generation tag.
+  // Missing/empty tags remain compatible with older clients; the receiver
+  // checks a non-empty tag against its remote SDP.
+  const auto& ufrag = field->get_ref<const std::string&>();
+  if (ufrag.size() > 256 || ufrag.find('\0') != std::string::npos ||
+      ufrag.find_first_of(" \t\r\n") != std::string::npos) {
+    return false;
+  }
+  destination["ufrag"] = ufrag;
+  return true;
+}
+
 bool ShouldTrackClientInfo(const std::string& user_id) {
   return !user_id.empty() && user_id.rfind("web-", 0) != 0 &&
          user_id.rfind("C-", 0) != 0;
@@ -457,6 +478,10 @@ bool SignalNegotiation::new_candidate(websocketpp::connection_hdl hdl,
                   {"sdp", candidate},
                   {"remote_user_id", user_id},
                   {"transmission_id", transmission_id}};
+  if (!CopyOptionalIceUfrag(j, message)) {
+    LOG_WARN("new_candidate has an invalid ICE username fragment");
+    return false;
+  }
   send_msg_(destination_hdl, message);
 
   return true;
@@ -487,6 +512,10 @@ bool SignalNegotiation::new_candidate_mid(websocketpp::connection_hdl hdl,
                   {"transmission_id", transmission_id},
                   {"candidate", candidate},
                   {"mid", mid}};
+  if (!CopyOptionalIceUfrag(j, message)) {
+    LOG_WARN("new_candidate_mid has an invalid ICE username fragment");
+    return false;
+  }
   send_msg_(destination_hdl, message);
 
   return true;
