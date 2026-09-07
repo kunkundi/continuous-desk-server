@@ -1,294 +1,290 @@
 # CrossDesk Server
 
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-brightgreen.svg)]()
-[![License: LGPL v3](https://img.shields.io/badge/License-LGPL%20v3-blue.svg)](https://www.gnu.org/licenses/lgpl-3.0)
-[![GitHub last commit](https://img.shields.io/github/last-commit/kunkundi/crossdesk-server)](https://github.com/kunkundi/crossdesk-server/commits/web-client)
-[![Build Status](https://github.com/kunkundi/crossdesk-server/actions/workflows/build.yml/badge.svg)](https://github.com/kunkundi/crossdesk/actions)  
-[![Docker Pulls](https://img.shields.io/docker/pulls/crossdesk/crossdesk-server)](https://hub.docker.com/r/crossdesk/crossdesk-server/tags)
-[![GitHub issues](https://img.shields.io/github/issues/kunkundi/crossdesk-server.svg)]()
-[![GitHub stars](https://img.shields.io/github/stars/kunkundi/crossdesk-server.svg?style=social)]()
-[![GitHub forks](https://img.shields.io/github/forks/kunkundi/crossdesk-server.svg?style=social)]()
+Device registration, presence, remote-session signaling, and temporary TURN credentials for [CrossDesk](https://github.com/kunkundi/crossdesk), with a built-in Web admin dashboard. Signaling uses WSS; device records and duration statistics are persisted in SQLite.
 
-[ [中文](README.md) / English ]
+[中文](README.md) · [Release files](https://github.com/kunkundi/crossdesk-server/releases) · [Docker images](https://hub.docker.com/r/crossdesk/crossdesk-server/tags) · [Desktop client](https://github.com/kunkundi/crossdesk) · [Web client](https://github.com/kunkundi/crossdesk-web-client)
 
-Server designed for [CrossDesk](https://github.com/kunkundi/crossdesk) , supporting WSS-encrypted connections and using SQLite3 to store user information.
+[![Build](https://github.com/kunkundi/crossdesk-server/actions/workflows/build.yml/badge.svg)](https://github.com/kunkundi/crossdesk-server/actions/workflows/build.yml)
+[![Release](https://img.shields.io/github/v/release/kunkundi/crossdesk-server)](https://github.com/kunkundi/crossdesk-server/releases)
+[![Docker Pulls](https://img.shields.io/docker/pulls/crossdesk/crossdesk-server)](https://hub.docker.com/r/crossdesk/crossdesk-server)
+[![License: LGPL v3](https://img.shields.io/badge/license-LGPL--3.0-blue)](LICENSE)
 
----
+[Deployment](#run-services) · [Client setup](#clients) · [Admin dashboard](#admin) · [Status API](#stats) · [Maintenance](#operations) · [Build](#build)
 
-Requirements:
-- [xmake](https://xmake.io/#/guide/installation)
+## Components and capabilities
 
-Build:
-```
-git clone https://github.com/kunkundi/crossdesk-server.git
+| Component | Responsibility |
+| --- | --- |
+| CrossDesk Server | WSS signaling, device identities and password verification, presence, session coordination, and temporary TURN credentials |
+| Coturn | Relays media and data when clients cannot connect directly; runs in a separate container |
+| SQLite | Stores device records, online/control durations, and session information |
+| Web admin dashboard | Metrics, client/session lists, search, filters, sorting, session disconnection, and optional IP geolocation |
 
-cd crossdesk-server
+Clients try P2P connections and use TURN when needed. The current [Compose deployment](compose.yaml) and [CI](.github/workflows/build.yml) target **Linux amd64 / arm64**. Release images use Ubuntu 22.04 as their runtime environment.
 
-xmake b crossdesk_server
-```
+## Run services
 
-## About Xmake
-#### Build Options
-```
-# Switch build mode
-xmake f -m debug/release
+### 1. Prepare the deployment files
 
-# Optional build parameters
--r : Rebuild the target
--v : Show detailed build logs
--y : Automatically confirm prompts
+Use a Linux server with **Docker Engine and the Compose plugin** installed, and confirm that `docker compose version` works. Compose uses host networking; `INTERNAL_IP` must be an address the host can bind.
 
-# Example
-xmake b -vy crossdesk_server
-```
-For more information, please refer to the [official Xmake documentation](https://xmake.io/guide/quick-start.html) .
-
-## Build Docker Image
-
-```bash
-# Run from the repository root. This image contains CrossDesk Server only.
-sudo docker build -f docker/dockerfile -t image-name .
-```
-
-## Run Services
-
-### Use Published Images (Recommended for Servers)
-
-Download `compose.yaml` and `env.example` from the GitHub Release. The released `env.example` pins `CROSSDESK_IMAGE` to that release tag:
+Download **`compose.yaml`** and **`env.example`** from the same [GitHub Release](https://github.com/kunkundi/crossdesk-server/releases) into a dedicated deployment directory. Run there:
 
 ```bash
 cp env.example .env
-
-# Set the public/private IPs, ports, and TURN shared secret.
-vi .env
-
-sudo docker compose pull
-sudo docker compose up -d
-sudo docker compose ps
 ```
 
-When using `.env.example` from the repository, change `CROSSDESK_IMAGE` from `latest` to the exact release tag intended for production.
+The release's `env.example` pins the corresponding image tag. The source repository instead provides [`.env.example`](.env.example), which uses `latest`; choose a fixed release tag when using that file. Run all subsequent Compose commands from the configuration directory.
 
-### Use the CI Test Image
+### 2. Edit `.env`
 
-After a successful CI build of the default branch, the multi-architecture test image is published as `crossdesk/crossdesk-server:test`. This mutable tag tracks the latest successful build and is intended only for test environments, not production.
+Complete these values in a text editor and replace every example address. Public and private IPs usually differ on cloud hosts behind NAT. They can be identical when the public IP is assigned directly to the host's interface.
 
-Set the following value in `.env` on the test server:
+| Variable | Purpose / default |
+| --- | --- |
+| `CROSSDESK_IMAGE` | Fixed release tag matching the deployment files |
+| `EXTERNAL_IP` | Public IP used for the default TURN endpoint and generated certificate |
+| `INTERNAL_IP` | Local interface IP used by Coturn for listening and relaying |
+| `CROSSDESK_SERVER_PORT` | Shared WSS / HTTPS port; Compose defaults to `9099` |
+| `COTURN_PORT` | STUN / TURN port; defaults to `3478` |
+| `MIN_PORT` / `MAX_PORT` | TURN media port range; defaults to `50000`–`60000` |
+| `COTURN_AUTH_SECRET` | Signing secret shared by signaling and Coturn; never enter it in clients |
+| `COTURN_STATELESS_NONCE_SECRET` | Separately generated, persistent nonce secret |
+| `CROSSDESK_DATA_DIR` | Host data/certificate directory; defaults to `/var/lib/crossdesk` |
+| `CROSSDESK_LOG_DIR` | Host application-log directory; defaults to `/var/log/crossdesk` |
 
-```dotenv
-CROSSDESK_IMAGE=crossdesk/crossdesk-server:test
-```
-
-Pull the image before every deployment. `--no-build` ensures that the server uses the image published by CI:
+Run the following twice and use the two different outputs for the two secret fields above:
 
 ```bash
+openssl rand -hex 32
+openssl rand -hex 32
+```
+
+Optional `COTURN_PUBLIC_HOST` advertises a separate TURN hostname/IP; an empty value uses `EXTERNAL_IP`. `COTURN_CREDENTIAL_TTL_SECONDS` defaults to `3600` seconds, with a range of `60`–`86400`. `COTURN_LOG_LEVEL` defaults to `warning`, and `COTURN_MEMORY_LIMIT` to `512m`. See the [environment example](.env.example) for all options.
+
+The signaling server issues temporary TURN usernames/passwords during client login and session negotiation. Keep server shared secrets out of clients and Web pages. Check client compatibility when upgrading the server.
+
+### 3. Open ports and start
+
+Allow these ports through the host firewall and cloud security group:
+
+| Port | Protocol | Purpose |
+| --- | --- | --- |
+| `CROSSDESK_SERVER_PORT`, default `9099` | TCP | WSS, status API, and admin dashboard |
+| `COTURN_PORT`, default `3478` | TCP / UDP | STUN / TURN |
+| `MIN_PORT`–`MAX_PORT`, default `50000`–`60000` | UDP | TURN media relay |
+
+After saving `.env`, run:
+
+```bash
+sudo docker compose config -q
 sudo docker compose pull
 sudo docker compose up -d --no-build
 sudo docker compose ps
 ```
 
-### Build from Local Source
+`crossdesk_server` creates its certificate and database on first startup; `crossdesk_coturn` waits for the certificate files. The Compose health check only verifies that the key/certificate files exist. Also verify the status API below and an actual client connection.
 
-Build the binary as described above, place it at `dist/crossdesk_server`, and then run:
+All connection examples below use the Compose default, **9099**. If you change it, update subsequent URLs and client settings as well. Running the binary directly without a port argument defaults to **9090**.
 
-```bash
-cp .env.example .env
-vi .env
-sudo docker compose up -d --build
+<a id="clients"></a>
+
+## Certificates and client setup
+
+### Trust your server's certificate
+
+Default files are stored under `${CROSSDESK_DATA_DIR}/certs/`:
+
+| File | Purpose |
+| --- | --- |
+| `api.crossdesk.cn_root.crt` | Root certificate distributed to clients |
+| `api.crossdesk.cn_bundle.crt` | Server certificate chain |
+| `api.crossdesk.cn.key` | Server private key, retained on the server |
+
+These are **filenames expected by the program**; your server does not need the `api.crossdesk.cn` domain. The [certificate generator](docker/generate_certs.sh) includes only `EXTERNAL_IP` as an IP subject alternative name. Use that IP in clients. For a custom domain, supply a valid certificate chain covering that domain and its private key at the `bundle.crt` and `.key` paths listed above.
+
+The [startup script](docker/start.sh) reuses existing certificates. Editing the IP in `.env` does not reissue them. Regenerating self-signed certificates replaces the root certificate, which must then be trusted again on every client. A certificate issued by a system-trusted CA usually needs no separate root import.
+
+Copy your deployment's `api.crossdesk.cn_root.crt` to each client and import it into the system trust store:
+
+```powershell
+# Windows: administrator PowerShell; substitute the actual file path
+certutil -addstore "Root" "C:\path\to\api.crossdesk.cn_root.crt"
 ```
 
-Compose starts two independent containers:
-
-- `crossdesk_server` runs CrossDesk Server and generates the shared certificates on first startup.
-- `crossdesk_coturn` runs the pinned official Coturn image after the certificates are ready, and can be upgraded, restarted, and resource-limited independently.
-
-### Container Management Commands
-
-Run the following commands from the directory containing `compose.yaml`. Compose reads `.env` from the same directory by default:
+```bash
+# Ubuntu / Debian
+sudo cp /path/to/api.crossdesk.cn_root.crt /usr/local/share/ca-certificates/
+sudo update-ca-certificates
+```
 
 ```bash
-# Start all containers.
-sudo docker compose up -d
+# macOS
+sudo security add-trusted-cert -d -r trustRoot \
+  -k /Library/Keychains/System.keychain /path/to/api.crossdesk.cn_root.crt
+```
 
-# Show container status.
+### Configure the controller and host
+
+1. Open **☰ → Settings → Self-Hosted Config** in the desktop client.
+2. Enter the server IP/hostname, signaling port `9099`, and relay port `3478`, then confirm. The address field takes no URL scheme, path, or port.
+3. Enable the **Self-Hosted Config** checkbox and click **OK** in the parent settings window. Configure both clients to use the same server.
+4. After trusting the certificate, reopen the clients and wait for a server connection. Connect using the host's currently displayed ID and password.
+
+The current desktop client verifies certificates through the **system trust store**; there is no certificate-file picker in the self-hosting dialog. Recheck the device ID after switching servers.
+
+- **Web:** configure `signalingUrl` (for example, `wss://203.0.113.10:9099`) and the STUN address (for example, `stun:203.0.113.10:3478`) in the [Web client's](https://github.com/kunkundi/crossdesk-web-client) `web_client.js`. Replace the example IP, trust the certificate in the browser, and keep SRTP enabled on the host.
+- **Native iOS:** enter the signaling host, signaling port, and STUN/TURN port under Settings → Server and apply. Install and trust the root certificate on the device for a self-signed deployment.
+
+<a id="admin"></a>
+
+## Admin dashboard
+
+Set both `ADMIN_USERNAME` and `ADMIN_PASSWORD` in `.env`, then run `sudo docker compose up -d --no-build` again. Setting only one does not enable the dashboard. Open **`https://server-address:9099/admin`**, trust the certificate, and log in with that account.
+
+| Area / control | Action |
+| --- | --- |
+| Top metrics | View online devices, Web clients, active connections, and cumulative online/control durations |
+| Client Presence | Defaults to online PCs; switch PC/Web, filter Online/Remote/Offline/All, search IDs, sort, and paginate |
+| Details | Expand platform/version, current and cumulative durations, connection IP, location, and remote peers |
+| Active Sessions → Disconnect | Confirm to disconnect the selected session; devices stay online |
+| Refresh lists / Logout | Refresh manually / sign out |
+
+While visible, the page refreshes data every 5 seconds and updates displayed durations every second. Admin sessions are held in memory, expire after 8 hours by default, and require a new login after a server restart. Dashboard login cookies require HTTPS.
+
+**Optional geolocation:** IP lookup is disabled by default. Enable `CROSSDESK_GEOIP_LOOKUP=1` and set `CROSSDESK_GEOIP_KEY` in `.env` to send public connection IPs to IP2Location for country and state/province lookup. The map counts current online clients, including Web clients and excluding `C-*` controller identities; unresolved locations are counted separately. Disabled lookups or unavailable results leave the map without resolved distribution data.
+
+Connection IPs and locations are held in memory as presence state, not written to device profile records. The dashboard retains its IP2Location attribution link. The China map asset, [china-provinces.json](src/admin/web/china-provinces.json), comes from `china-map-geojson@1.0.4` under the ISC license.
+
+<details>
+<summary>Advanced geolocation and frontend configuration</summary>
+
+- Configure the endpoint with `CROSSDESK_GEOIP_SCHEME`, `CROSSDESK_GEOIP_HOST`, `CROSSDESK_GEOIP_PORT`, and `CROSSDESK_GEOIP_PATH`. Defaults are HTTPS, `api.ip2location.io`, `443`, and `/?key={key}&ip={ip}`.
+- `CROSSDESK_GEOIP_TIMEOUT_MS` defaults to `1200`. Failed lookups back off from `60000` to `1800000` milliseconds, controlled by `CROSSDESK_GEOIP_FAILURE_TTL_MS` and `CROSSDESK_GEOIP_FAILURE_MAX_TTL_MS`.
+- Successful results are cached. Failed lookups are deduplicated by IP and retried with backoff; retries stop once no online client uses the IP.
+- Frontend source lives in [src/admin/web](src/admin/web), installed at `/crossdesk-server/admin` in the container. A custom `CROSSDESK_ADMIN_WEB_DIR` must also be explicitly passed through Compose's `environment` and its directory mounted. Adding it to `.env` alone does not pass it into the container. Restart the service after frontend changes to refresh its asset cache.
+
+</details>
+
+<a id="stats"></a>
+
+## Status API
+
+`GET /stats` and `GET /api/stats` share the WSS HTTPS port, return aggregate statistics, allow cross-origin reads, and **do not require admin login**. Check from the server with the command below. Replace the example IP and adjust the root-certificate path if you changed the data directory:
+
+```bash
+curl --fail --cacert /var/lib/crossdesk/certs/api.crossdesk.cn_root.crt \
+  https://203.0.113.10:9099/stats
+```
+
+For a domain with a trusted CA certificate:
+
+```bash
+curl --fail https://your-domain.example.com:9099/stats
+```
+
+| Field | Meaning |
+| --- | --- |
+| `online_device_count` | Online devices, excluding `web-*` and `C-*` |
+| `online_web_client_count` | Online `web-*` clients |
+| `active_connection_count` | Active remote-control connections, counted separately for each host–guest pair |
+| `online_duration_seconds` | Sum of the current online periods of online devices |
+| `total_online_seconds` | Cumulative device online time, including current periods |
+| `total_control_seconds` / `total_controlled_seconds` | Cumulative controlling / controlled time, including ongoing sessions |
+
+Durations are in seconds. Detailed admin APIs use `/api/admin/*` and require admin login; the public status API does not return device details.
+
+<a id="operations"></a>
+
+## Maintenance and troubleshooting
+
+### Logs and upgrades
+
+Run from the configuration directory:
+
+```bash
 sudo docker compose ps
+sudo docker compose logs --tail 100 crossdesk-server coturn
+```
 
-# Stop all containers while keeping them available for a later start.
-sudo docker compose stop
+Back up before upgrading. Change the fixed image tag in `.env` and use deployment files matching that release:
 
-# Restart all containers.
-sudo docker compose restart
-
-# Pull the images selected in .env and recreate containers whose images changed.
+```bash
+sudo docker compose config -q
 sudo docker compose pull
-sudo docker compose up -d
+sudo docker compose up -d --no-build
 ```
 
-`docker compose restart` does not apply changes from `.env` or `compose.yaml`. Run `docker compose up -d` after changing configuration or image versions.
+`docker compose restart` restarts existing containers without applying changed environment variables or images. Application logs are written to `${CROSSDESK_LOG_DIR}` and stdout; view Coturn logs with `docker compose logs coturn`. Each container's stdout/stderr rotates across three 50 MB files. Application log files rotate separately; restarts create new log groups that need periodic cleanup or archival.
 
-If the files are stored elsewhere, specify their paths explicitly. For example:
+### Backups and migration
+
+Back up `.env`, `compose.yaml`, and `certs/` plus `db/` under `${CROSSDESK_DATA_DIR}`. These backups include keys and the device database. This example uses the default data directory and stops services for a consistent archive; remote connections are interrupted during the backup:
 
 ```bash
-sudo docker compose \
-  -f /path/to/compose.yaml \
-  --env-file /root/workspace/server_config/.env \
-  up -d
+sudo docker compose stop
+backup_file="crossdesk-backup-$(date +%Y%m%d-%H%M%S).tar.gz"
+sudo tar -czf "$backup_file" .env compose.yaml -C /var/lib/crossdesk certs db
+sudo docker compose up -d --no-build
 ```
 
-**Parameters**
+For migration, restore the matching files on the destination host, check mount paths and permissions, then start. A changed public IP/hostname also requires updating certificates and client addresses. For older deployments with custom paths, point `CROSSDESK_DATA_DIR` and `CROSSDESK_LOG_DIR` at the existing directories.
 
-- **EXTERNAL_IP**: The server’s public IP. This corresponds to **Server Address** in the CrossDesk client’s **Self-Hosted Server Configuration**.
-- **INTERNAL_IP**: The server’s internal IP.
-- **CROSSDESK_SERVER_PORT**: The port used by the self-hosted service. This corresponds to **Server Port** in the CrossDesk client’s **Self-Hosted Server Configuration**.
-- **COTURN_PORT**: The port used by the COTURN service. This corresponds to **Relay Service Port** in the CrossDesk client’s **Self-Hosted Server Configuration**.
-- **MIN_PORT / MAX_PORT**: The port range used by the COTURN service. Example: `MIN_PORT=50000`, `MAX_PORT=60000`. Adjust the range depending on the number of clients.
-- **COTURN_PUBLIC_HOST**: Optional public TURN hostname or IP; defaults to `EXTERNAL_IP` when empty.
-- **COTURN_AUTH_SECRET**: Signing secret shared only by CrossDesk Server and Coturn. Generate it with `openssl rand -hex 32`; never send it to clients.
-- **COTURN_CREDENTIAL_TTL_SECONDS**: Lifetime of temporary TURN credentials issued by the signaling service, from 60 to 86400 seconds; defaults to 3600.
-- **COTURN_STATELESS_NONCE_SECRET**: Generate it with `openssl rand -hex 32` and keep it stable so Coturn restarts do not force every client through an extra 438 re-authentication round trip.
-- **COTURN_LOG_LEVEL**: Defaults to `warning` to avoid per-request debug logging.
-- **COTURN_MEMORY_LIMIT**: Coturn container memory limit; defaults to `512m` and can be adjusted for expected concurrency.
-- **CROSSDESK_DATA_DIR / CROSSDESK_LOG_DIR**: Host directories for persistent data, certificates, and CrossDesk logs.
+### Common issues
 
-The signaling service issues fresh TURN REST API usernames and passwords after client login and before each new ICE connection is created. Clients no longer embed a fixed Coturn account. `COTURN_AUTH_SECRET` and `COTURN_STATELESS_NONCE_SECRET` serve different purposes and should be generated independently.
+| Symptom | Check |
+| --- | --- |
+| Configuration validation fails | Required IPs and both secrets are set, and files belong to the same release |
+| Certificate generation / database writes fail | Signaling logs and writable mount paths; the default image starts as root, so adjust ownership for the actual UID/GID only when changing container users or similar settings |
+| Coturn cannot bind | `INTERNAL_IP` belongs to a host interface and the ports are available |
+| Client TLS errors | System root trust, validity dates, and matching IP/hostname; editing the IP does not update existing certificates |
+| Server connected, remote device offline | Both clients use the same service, the host is running, and its current ID was copied |
+| P2P and relay both fail | Client relay setting/version, matching TURN shared secrets, and relay/media firewall ports |
+| Dashboard disabled / login fails | Both admin variables reached the container, the container was recreated, and the browser uses HTTPS |
+| No map distribution | Geolocation enabled, API key, and outbound access; lookup is disabled by default |
 
-### Logging Mode (Default: Hybrid)
+<a id="build"></a>
 
-Compose uses a hybrid logging model by default:
+## Build from source
 
-- CrossDesk business logs continue to be written under `/var/log/crossdesk/` and are persisted to the host through `CROSSDESK_LOG_DIR` for backup, download, and application troubleshooting.
-- Coturn runtime logs go only to stdout. Docker rotates them with `max-size=50m` and `max-file=3`, retaining approximately 150 MB at most so abnormal public traffic cannot grow the log indefinitely.
-- Coturn no longer creates `/var/log/crossdesk/turn.log`, avoiding duplicate copies in both a log file and Docker's container log.
-
-When migrating from the previous `docker run` deployment and retaining `/root/workspace/server_config`, set the following in `.env`:
-
-```dotenv
-CROSSDESK_DATA_DIR=/root/workspace/server_config
-CROSSDESK_LOG_DIR=/root/workspace/server_config/logs
-```
-
-This reuses the existing `certs`, `db`, and CrossDesk log directories. Coturn's high-volume runtime log remains bounded and rotated by Docker instead of being written there.
-
-View or export Coturn logs with:
+CI builds on **Ubuntu 22.04, amd64 / arm64**. Install Git, a C++17 toolchain, and [Xmake](https://xmake.io/guide/quick-start.html). Xmake downloads the C++ dependencies. These Linux dependency commands match the CI baseline:
 
 ```bash
-# Follow the most recent 200 lines.
-sudo docker logs -f --tail 200 crossdesk_coturn
+sudo apt-get update
+sudo apt-get install -y ca-certificates git curl unzip build-essential
 
-# Show the last hour.
-sudo docker logs --since 1h crossdesk_coturn
-
-# Export an incident to the persistent log directory when needed.
-sudo docker logs --since 1h crossdesk_coturn \
-  > /root/workspace/server_config/logs/coturn-export.log 2>&1
+git clone https://github.com/kunkundi/crossdesk-server.git
+cd crossdesk-server
+xmake f -c -m release -y
+xmake b -vy crossdesk_server
 ```
 
-Docker removes the Coturn container log when the container is deleted. Export incident logs before removal when long-term retention is required, or forward them to a centralized logging system.
+Ensure `xmake --version` works before the first build. See [xmake.lua](xmake.lua) for other platform configurations; the current release workflow provides only Linux binaries and images. Select Debug with `xmake f -m debug`; `xmake r -d crossdesk_server` runs through a debugger.
 
-**Notes**
+### Build a local runtime image
 
-- **The server must open the following ports: COTURN_PORT/udp, COTURN_PORT/tcp, MIN_PORT–MAX_PORT/udp, and CROSSDESK_SERVER_PORT/tcp.**
-- Coturn uses `EXTERNAL_IP/INTERNAL_IP` mapping for cloud servers behind public NAT.
-- Docker stdout/stderr logs for both containers are limited to three 50 MB files.
-- Certificate files will be automatically generated on first startup and persisted to the host at `/var/lib/crossdesk/certs`.
-- The database file will be automatically created and stored at `/var/lib/crossdesk/db/crossdesk-server.db`.
-- CrossDesk business logs are persisted under `/var/log/crossdesk/`; view rotating Coturn logs with `docker logs crossdesk_coturn`.
-
-**Permission Notice**
-If the directories automatically created by Docker belong to root and have insufficient write permissions, the container user may not be able to write to them. This can cause:
-  - Certificate generation failure, leading to startup script errors and container exit.
-  - Database directory creation failure, causing the program to throw exceptions and crash.
-  - Log directory creation failure, preventing logs from being written (though the program may continue running).
-
-**Solution:** Manually set permissions before starting the container:
-```bash
-sudo mkdir -p /var/lib/crossdesk /var/log/crossdesk
-sudo chown -R $(id -u):$(id -g) /var/lib/crossdesk /var/log/crossdesk
-```
-
-## Service Stats Endpoint
-
-After the service starts, you can query runtime stats through the same HTTPS port:
-
-Official CA deployment example:
+The Dockerfile **packages an already compiled Linux binary**. Complete a Release build on Ubuntu 22.04 with the same architecture as the target image, then run from the repository root:
 
 ```bash
-curl https://your-domain.example.com:9090/stats
+# amd64; replace x86_64 with arm64 for an arm64 build
+install -Dm755 build/linux/x86_64/release/crossdesk_server dist/crossdesk_server
+sudo docker build -f docker/dockerfile -t crossdesk-server:local .
 ```
 
-Self-signed certificate deployment example:
+Copy `.env.example` to `.env` in the repository root, complete the deployment settings above, and set `CROSSDESK_IMAGE=crossdesk-server:local`. Then run:
 
 ```bash
-curl --cacert /var/lib/crossdesk/certs/api.crossdesk.cn_root.crt \
-  https://your-server-ip:9090/stats
+sudo docker compose config -q
+sudo docker compose pull coturn
+sudo docker compose up -d --no-build
 ```
 
-Notes:
-- Official CA certificates are usually trusted by the operating system, so `curl` does not need an extra `--cacert`
-- Self-signed certificates require the root certificate `api.crossdesk.cn_root.crt` to be provided explicitly
-- The request host must match the domain name or IP address in the server certificate; do not replace it with `127.0.0.1` arbitrarily
+Direct binary execution requires the certificate, database, and log paths defined in [main.cpp](src/main.cpp), including `/var/lib/crossdesk/certs`. `CROSSDESK_DATA_DIR` / `CROSSDESK_LOG_DIR` configure Compose host mounts; they do not override paths in the binary. The binary does not generate certificates.
 
-The `/api/stats` path is also supported. Example response:
+### CI test image
 
-```json
-{
-  "online_device_count": 12,
-  "online_web_client_count": 2,
-  "active_connection_count": 3,
-  "online_duration_seconds": 86400,
-  "total_online_seconds": 259200,
-  "total_control_seconds": 3600,
-  "total_controlled_seconds": 7200
-}
-```
+Successful default-branch builds publish the multi-architecture `crossdesk/crossdesk-server:test` tag, which changes with subsequent builds. Test deployments can set `CROSSDESK_IMAGE=crossdesk/crossdesk-server:test` in `.env` and use the pull/start commands above. Use fixed release tags for production. See the [CI workflow](.github/workflows/build.yml) for artifacts and image publishing.
 
-- `online_device_count`: Number of online devices, excluding temporary `web-*` clients and `C-*` clone clients
-- `online_web_client_count`: Number of online web clients, counting only temporary `web-*` clients
-- `active_connection_count`: Number of active in-progress connections, summed from the current guests connected to each host; a guest's own login or join connection is not counted separately
-- `online_duration_seconds`: Sum of the current online session duration for online devices, excluding temporary `web-*` clients and `C-*` clone clients
-- `total_online_seconds`: Sum of accumulated device online duration, including the current session duration for devices that are still online
-- `total_control_seconds`: Sum of accumulated duration where devices are controlling another device, including active remote-control sessions
-- `total_controlled_seconds`: Sum of accumulated duration where devices are being controlled, including active remote-control sessions
-- The response includes `Access-Control-Allow-Origin: *`, so it can be called directly from browser `fetch`
+## Feedback and license
 
-### Certificate Files
-If you use the built-in self-signed certificate flow, you can find the root certificate `api.crossdesk.cn_root.crt` at `/var/lib/crossdesk/certs` on the host machine.
-Download it to your client device and select it in the **Certificate File Path** field under the CrossDesk client’s **Self-Hosted Server Settings**.
-
-If you deploy an official CA certificate, you usually do not need to distribute this root certificate separately, because clients and `curl` will validate the certificate with the system trust store.
-
-## Admin Dashboard
-
-The server can serve an embedded admin dashboard at `/admin` on the same HTTPS port.
-
-Enable it by setting both environment variables before startup:
-
-```bash
-ADMIN_USERNAME=admin
-ADMIN_PASSWORD=change-this-password
-```
-
-Compose example: set the following values in `.env`:
-
-```dotenv
-ADMIN_USERNAME=admin
-ADMIN_PASSWORD=change-this-password
-```
-
-Then apply the configuration:
-
-```bash
-sudo docker compose up -d
-```
-
-After startup, open:
-
-```text
-https://your-domain.example.com:9090/admin
-```
-
-The dashboard shows online devices, online web clients, active remote-control sessions, accumulated online duration, accumulated control duration, and accumulated controlled duration, and supports disconnecting a selected remote-control session. It includes a China user-distribution map where darker provinces have more users, with users outside China summarized separately. The client-presence table defaults to online PC clients and provides online, active remote-control, offline, and all status filters plus a PC/Web client-kind selector; it also supports search, pagination, sorting, expandable details, and the geographic location resolved from the current online connection IP. Client IP and geolocation are kept only as in-memory online state, not persisted as device profile data in the database. The current online duration refreshes live while a client is online, and the row stays visible with the last-online timestamp after the client goes offline.
-
-IP geolocation is completely disabled by default. When disabled, CrossDesk stores only the client IP, does not start the resolver worker or classify private-network addresses, and emits no GeoIP logs. After setting `CROSSDESK_GEOIP_LOOKUP=1`, private, loopback, and Docker private-network addresses are shown as `Private network`, while public IPs are looked up through IP2Location using the API key in `CROSSDESK_GEOIP_KEY`. The default request is `https://api.ip2location.io/?key={key}&ip={ip}`. The resolver reads only `country_name`, `country_code`, and `region_name`, and builds location text such as `California, United States of America`; city fields are no longer read or displayed. Geo distribution counts a client as unknown only when both country and a recognizable province are missing. If you use the IP2Location.io Free plan or keyless API, attribution is required; the admin geo-distribution area displays `CrossDesk uses IP2Location.io IP geolocation web service.` with a link to `https://www.ip2location.io`. Configure the endpoint with `CROSSDESK_GEOIP_SCHEME`, `CROSSDESK_GEOIP_HOST`, `CROSSDESK_GEOIP_PORT`, and `CROSSDESK_GEOIP_PATH`; `{ip}` and `{key}` in the path are replaced before the request. The lookup timeout can be adjusted with `CROSSDESK_GEOIP_TIMEOUT_MS`; the default is 1200ms. Successful IP results are cached; failed results are not stored as device locations. A background IP queue deduplicates lookups by IP and re-enqueues failures with backoff. If no online device is using an IP when a retry runs, the job is dropped. Backoff starts at 60000ms and doubles up to 1800000ms by default. Tune this with `CROSSDESK_GEOIP_FAILURE_TTL_MS` and `CROSSDESK_GEOIP_FAILURE_MAX_TTL_MS`.
-
-The admin frontend assets live in `src/admin/web` and are copied to `/crossdesk-server/admin` in the container. Set `CROSSDESK_ADMIN_WEB_DIR` to serve a custom frontend directory. The China map boundary asset `china-provinces.json` is generated from the ISC-licensed `china-map-geojson@1.0.4` province-level GeoJSON data.
+[Report issues](https://github.com/kunkundi/crossdesk-server/issues) with the server tag, both client versions, deployment method, and sanitized logs. CrossDesk Server uses [LGPL-3.0](LICENSE).

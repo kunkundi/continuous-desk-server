@@ -1,294 +1,290 @@
 # CrossDesk Server
 
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-brightgreen.svg)]()
-[![License: LGPL v3](https://img.shields.io/badge/License-LGPL%20v3-blue.svg)](https://www.gnu.org/licenses/lgpl-3.0)
-[![GitHub last commit](https://img.shields.io/github/last-commit/kunkundi/crossdesk-server)](https://github.com/kunkundi/crossdesk-server/commits/web-client)
-[![Build Status](https://github.com/kunkundi/crossdesk-server/actions/workflows/build.yml/badge.svg)](https://github.com/kunkundi/crossdesk/actions)  
-[![Docker Pulls](https://img.shields.io/docker/pulls/crossdesk/crossdesk-server)](https://hub.docker.com/r/crossdesk/crossdesk-server/tags)
-[![GitHub issues](https://img.shields.io/github/issues/kunkundi/crossdesk-server.svg)]()
-[![GitHub stars](https://img.shields.io/github/stars/kunkundi/crossdesk-server.svg?style=social)]()
-[![GitHub forks](https://img.shields.io/github/forks/kunkundi/crossdesk-server.svg?style=social)]()
+为 [CrossDesk](https://github.com/kunkundi/crossdesk) 提供设备注册、在线状态、远程会话信令与临时 TURN 凭据，内置 Web 管理后台。信令使用 WSS，设备资料与时长统计使用 SQLite 持久化。
 
-[ [English](README_EN.md) / 中文 ]
+[English](README_EN.md) · [下载发布配置](https://github.com/kunkundi/crossdesk-server/releases) · [Docker 镜像](https://hub.docker.com/r/crossdesk/crossdesk-server/tags) · [客户端](https://github.com/kunkundi/crossdesk) · [Web 客户端](https://github.com/kunkundi/crossdesk-web-client)
 
-为 [CrossDesk](https://github.com/kunkundi/crossdesk) 设计的服务端，支持WSS加密连接，使用SQLite3存储用户信息。
+[![Build](https://github.com/kunkundi/crossdesk-server/actions/workflows/build.yml/badge.svg)](https://github.com/kunkundi/crossdesk-server/actions/workflows/build.yml)
+[![Release](https://img.shields.io/github/v/release/kunkundi/crossdesk-server)](https://github.com/kunkundi/crossdesk-server/releases)
+[![Docker Pulls](https://img.shields.io/docker/pulls/crossdesk/crossdesk-server)](https://hub.docker.com/r/crossdesk/crossdesk-server)
+[![License: LGPL v3](https://img.shields.io/badge/license-LGPL--3.0-blue)](LICENSE)
 
----
+[部署服务](#运行服务) · [连接客户端](#clients) · [管理后台](#admin) · [状态接口](#stats) · [维护与排查](#operations) · [源码构建](#build)
 
-## 如何编译
+## 组件与能力
 
-依赖：
-- [xmake](https://xmake.io/#/guide/installation)
+| 组件 | 职责 |
+| --- | --- |
+| CrossDesk Server | WSS 信令、设备身份与密码验证、在线状态、会话协调、临时 TURN 凭据 |
+| Coturn | 在客户端无法直连时中继媒体与数据；由独立容器运行 |
+| SQLite | 保存设备记录、在线与远控时长及会话信息 |
+| Web 管理后台 | 查看指标、客户端与活动会话，搜索 / 筛选 / 排序，断开选定会话，可选 IP 地域分布 |
 
-编译
-```
-git clone https://github.com/kunkundi/crossdesk-server.git
-
-cd crossdesk-server
-
-xmake b crossdesk_server
-```
-
-## 关于 Xmake
-#### 编译选项
-```
-# 切换编译模式
-xmake f -m debug/release
-
-# 可选编译参数
--r ：重新构建目标
--v ：显示详细的构建日志
--y ：自动确认提示
-
-# 示例
-xmake b -vy crossdesk_server
-```
-更多使用方法可参考 [Xmake官方文档](https://xmake.io/guide/quick-start.html) 。
-
-## 构建镜像
-
-```bash
-# 在仓库根目录执行；该镜像只包含 CrossDesk Server
-sudo docker build -f docker/dockerfile -t image-name .
-```
+客户端优先尝试 P2P 直连，必要时通过 TURN 中继。当前 [Compose](compose.yaml) 和 [CI](.github/workflows/build.yml) 面向 **Linux amd64 / arm64**；发布镜像以 Ubuntu 22.04 为运行环境。
 
 ## 运行服务
 
-### 使用已发布镜像（服务器推荐）
+### 1. 准备部署配置
 
-从 GitHub Release 下载 `compose.yaml` 和 `env.example`。Release 中的 `env.example` 已将 `CROSSDESK_IMAGE` 固定为对应的发布 tag：
+在已安装 **Docker Engine 和 Compose 插件**的 Linux 服务器上操作，先确认 `docker compose version` 可用。Compose 使用主机网络；`INTERNAL_IP` 必须是宿主机实际可绑定的地址。
+
+从同一个 [GitHub Release](https://github.com/kunkundi/crossdesk-server/releases) 下载 **`compose.yaml`** 和 **`env.example`**，放在单独的部署目录中。在该目录执行：
 
 ```bash
 cp env.example .env
-
-# 编辑公网 IP、内网 IP、端口和 TURN 共享密钥
-vi .env
-
-sudo docker compose pull
-sudo docker compose up -d
-sudo docker compose ps
 ```
 
-如果使用仓库中的 `.env.example`，建议将 `CROSSDESK_IMAGE` 从 `latest` 改为需要部署的固定版本 tag。
+Release 附件中的 `env.example` 已固定对应镜像 tag。源码仓库中的文件名是 [`.env.example`](.env.example)，其镜像值为 `latest`；使用它时请自行选择固定发布 tag。后续 Compose 命令都在配置目录执行。
 
-### 使用 CI 测试镜像
+### 2. 编辑 `.env`
 
-默认分支的 CI 构建成功后会发布多架构测试镜像 `crossdesk/crossdesk-server:test`。该标签会随最新成功构建更新，仅用于测试环境，不应在生产环境使用。
+用文本编辑器填写以下配置，替换所有示例地址。云服务器存在公网 NAT 时，公网和内网 IP 通常不同；公网 IP 直接配置在网卡上时，两项可以相同。
 
-在测试服务器的 `.env` 中设置：
+| 配置 | 用途 / 默认值 |
+| --- | --- |
+| `CROSSDESK_IMAGE` | 使用与部署文件配套的固定发布 tag |
+| `EXTERNAL_IP` | 公网 IP，用于默认 TURN 地址与自动证书生成 |
+| `INTERNAL_IP` | Coturn 监听和中继使用的本机网卡 IP |
+| `CROSSDESK_SERVER_PORT` | WSS / HTTPS 共用端口，Compose 默认 `9099` |
+| `COTURN_PORT` | STUN / TURN 端口，默认 `3478` |
+| `MIN_PORT` / `MAX_PORT` | TURN 媒体端口范围，默认 `50000`–`60000` |
+| `COTURN_AUTH_SECRET` | 信令服务与 Coturn 共享的签名密钥，不填入客户端 |
+| `COTURN_STATELESS_NONCE_SECRET` | 独立的 nonce 密钥，生成后持久保存 |
+| `CROSSDESK_DATA_DIR` | 数据与证书的宿主机目录，默认 `/var/lib/crossdesk` |
+| `CROSSDESK_LOG_DIR` | 业务日志的宿主机目录，默认 `/var/log/crossdesk` |
 
-```dotenv
-CROSSDESK_IMAGE=crossdesk/crossdesk-server:test
-```
-
-每次部署前应先拉取最新镜像；`--no-build` 可确保服务器直接使用 CI 发布的镜像：
+分别运行两次下面的命令，将两个不同的输出填入上述两个密钥字段：
 
 ```bash
+openssl rand -hex 32
+openssl rand -hex 32
+```
+
+可选项 `COTURN_PUBLIC_HOST` 用于向客户端公布独立的 TURN 域名 / IP，留空时使用 `EXTERNAL_IP`。`COTURN_CREDENTIAL_TTL_SECONDS` 默认 `3600` 秒，范围为 `60`–`86400`；`COTURN_LOG_LEVEL` 默认 `warning`，`COTURN_MEMORY_LIMIT` 默认 `512m`。完整参数见 [环境变量示例](.env.example)。
+
+客户端登录和会话协商时由信令服务签发临时 TURN 用户名、密码；不要在客户端或 Web 页面中配置服务器共享密钥。更新服务端时同时核对客户端的版本兼容性。
+
+### 3. 放通端口并启动
+
+防火墙及云安全组需要允许：
+
+| 端口 | 协议 | 用途 |
+| --- | --- | --- |
+| `CROSSDESK_SERVER_PORT`，默认 `9099` | TCP | WSS、状态接口与管理后台 |
+| `COTURN_PORT`，默认 `3478` | TCP / UDP | STUN / TURN |
+| `MIN_PORT`–`MAX_PORT`，默认 `50000`–`60000` | UDP | TURN 中继媒体 |
+
+保存 `.env` 后执行：
+
+```bash
+sudo docker compose config -q
 sudo docker compose pull
 sudo docker compose up -d --no-build
 sudo docker compose ps
 ```
 
-### 从本地源码构建
+`crossdesk_server` 会首次生成证书并创建数据库；`crossdesk_coturn` 等待证书文件就绪后启动。Compose 的健康检查只确认密钥和证书文件存在，还需通过下文的状态接口及实际客户端连接验证服务。
 
-先按照上文编译并将可执行文件放到 `dist/crossdesk_server`，然后执行：
+本文连接示例均使用 Compose 默认端口 **9099**；如果修改了端口，后续 URL 和客户端配置也要一起修改。直接运行二进制且不传端口参数时，程序默认使用 **9090**。
+
+<a id="clients"></a>
+
+## 证书与客户端连接
+
+### 信任自己的服务器证书
+
+默认文件位于 `${CROSSDESK_DATA_DIR}/certs/`：
+
+| 文件 | 用途 |
+| --- | --- |
+| `api.crossdesk.cn_root.crt` | 分发到客户端的根证书 |
+| `api.crossdesk.cn_bundle.crt` | 服务端证书链 |
+| `api.crossdesk.cn.key` | 服务端私钥，保留在服务器 |
+
+这些是程序约定的**文件名**，不要求服务器使用 `api.crossdesk.cn` 域名。[自动生成脚本](docker/generate_certs.sh) 只将 `EXTERNAL_IP` 写入证书的 IP 地址范围；客户端应使用该 IP。使用自定义域名时，需提供包含该域名的有效证书链和私钥，分别放到 `bundle.crt` 和 `.key` 对应的上述路径。
+
+[启动脚本](docker/start.sh) 会复用已有证书，修改 `.env` 中的 IP 不会重新签发证书。重新生成自签证书会更换根证书，所有客户端都需重新信任。使用受系统信任的 CA 证书时通常无需额外导入根证书。
+
+将自己部署的 `api.crossdesk.cn_root.crt` 复制到客户端后，按平台导入系统信任库：
+
+```powershell
+# Windows：管理员 PowerShell，替换为实际文件路径
+certutil -addstore "Root" "C:\path\to\api.crossdesk.cn_root.crt"
+```
 
 ```bash
-cp .env.example .env
-vi .env
-sudo docker compose up -d --build
+# Ubuntu / Debian
+sudo cp /path/to/api.crossdesk.cn_root.crt /usr/local/share/ca-certificates/
+sudo update-ca-certificates
 ```
-
-Compose 会启动两个相互独立的容器：
-
-- `crossdesk_server`：只运行 CrossDesk Server，并负责首次生成共享证书。
-- `crossdesk_coturn`：运行官方固定 Coturn 镜像，等待证书生成后启动；可独立升级、重启和限制资源。
-
-### 容器管理命令
-
-以下命令应在 `compose.yaml` 所在目录执行，Compose 默认读取同目录下的 `.env`：
 
 ```bash
-# 启动全部容器
-sudo docker compose up -d
-
-# 查看容器状态
-sudo docker compose ps
-
-# 停止全部容器（保留容器，可再次启动）
-sudo docker compose stop
-
-# 重启全部容器
-sudo docker compose restart
-
-# 拉取 .env 中指定的镜像，并重新创建有更新的容器
-sudo docker compose pull
-sudo docker compose up -d
+# macOS
+sudo security add-trusted-cert -d -r trustRoot \
+  -k /Library/Keychains/System.keychain /path/to/api.crossdesk.cn_root.crt
 ```
 
-`docker compose restart` 不会应用 `.env` 或 `compose.yaml` 的修改；配置或镜像版本发生变化后，应执行 `docker compose up -d`。
+### 配置控制端和被控端
 
-如果两个文件不在当前目录，请显式指定路径，例如：
+1. 在桌面客户端打开 **☰ → 设置 → 自托管配置**。
+2. 填写服务器 IP / 域名、信令端口 `9099`、中继端口 `3478`，点击“确认”。地址栏不填协议前缀、路径或端口。
+3. 返回设置，勾选“自托管配置”，再点击“确认”保存。两端都需使用同一服务器。
+4. 完成证书信任后重新打开客户端，等待“已连接服务器”，使用被控端当前显示的 ID 和密码连接。
 
-```bash
-sudo docker compose \
-  -f /path/to/compose.yaml \
-  --env-file /root/workspace/server_config/.env \
-  up -d
-```
+当前桌面客户端通过**系统信任库**验证证书，无需在自托管窗口选择证书文件。切换服务器后请重新核对设备 ID。
 
-**参数**
+- **Web：** 在 [Web 客户端](https://github.com/kunkundi/crossdesk-web-client) 的 `web_client.js` 中配置 `signalingUrl`（例如 `wss://203.0.113.10:9099`）及 STUN 地址（例如 `stun:203.0.113.10:3478`），替换示例 IP；浏览器也需信任证书，被控端保持 SRTP 开启。
+- **原生 iOS：** 在“设置 → 服务器”中填写信令主机、信令端口与 STUN/TURN 端口并应用；自签根证书需要在设备上安装并启用信任。
 
-- EXTERNAL_IP：服务器公网 IP , 对应 CrossDesk 客户端**自托管服务器配置**中填写的**服务器地址**
-- INTERNAL_IP：服务器内网 IP
-- CROSSDESK_SERVER_PORT：自托管服务使用的端口，对应 CrossDesk 客户端**自托管服务器配置**中填写的**服务器端口**
-- COTURN_PORT: COTURN 服务使用的端口, 对应 CrossDesk 客户端**自托管服务器配置**中填写的**中继服务端口**
-- MIN_PORT/MAX_PORT：COTURN 服务使用的端口范围，例如：MIN_PORT=50000, MAX_PORT=60000，范围可根据客户端数量调整。
-- COTURN_PUBLIC_HOST：可选的 TURN 公网域名或 IP；留空时使用 `EXTERNAL_IP`。
-- COTURN_AUTH_SECRET：CrossDesk Server 与 Coturn 共享的签名密钥，使用 `openssl rand -hex 32` 生成；不得下发客户端。
-- COTURN_CREDENTIAL_TTL_SECONDS：信令服务签发给客户端的 TURN 临时凭据有效期，范围 60–86400 秒，默认 3600 秒。
-- COTURN_STATELESS_NONCE_SECRET：使用 `openssl rand -hex 32` 生成并保持不变，避免 Coturn 重启后所有客户端因 nonce 密钥变化触发额外的 438 重认证。
-- COTURN_LOG_LEVEL：默认 `warning`，避免按请求打印调试日志。
-- COTURN_MEMORY_LIMIT：Coturn 容器内存上限，默认 `512m`，可按并发量调整。
-- CROSSDESK_DATA_DIR/CROSSDESK_LOG_DIR：宿主机上的数据、证书和日志目录。
+<a id="admin"></a>
 
-客户端登录成功以及每次创建新的 ICE 连接前，信令服务都会签发新的 TURN REST API 临时用户名和密码。客户端不再内置固定的 Coturn 账户。`COTURN_AUTH_SECRET` 与 `COTURN_STATELESS_NONCE_SECRET` 用途不同，应分别生成。
+## 后台管理
 
-### 日志模式（默认：混合模式）
+在 `.env` 中同时设置 `ADMIN_USERNAME` 和 `ADMIN_PASSWORD`，然后重新执行 `sudo docker compose up -d --no-build`。只设置其中一项不会启用后台。浏览器访问 **`https://服务器地址:9099/admin`**，信任证书后使用该账户登录。
 
-Compose 默认采用混合日志模式：
+| 区域 / 入口 | 操作 |
+| --- | --- |
+| 顶部指标 | 查看在线设备、Web 客户端、活动连接与累计在线 / 远控时长 |
+| Client Presence | 默认显示在线 PC；可切换 PC / Web，筛选 Online / Remote / Offline / All，搜索 ID、排序和翻页 |
+| Details | 展开版本、平台、当前与累计时长、连接 IP、地域及远控对端 |
+| Active Sessions → Disconnect | 确认后断开所选会话；设备本身保持在线 |
+| Refresh lists / Logout | 手动刷新列表 / 退出管理登录 |
 
-- CrossDesk 业务日志继续写入 `/var/log/crossdesk/`，并通过 `CROSSDESK_LOG_DIR` 持久化到宿主机，便于备份、下载和业务排查。
-- Coturn 运行日志只写标准输出，由 Docker 按 `max-size=50m`、`max-file=3` 自动轮转，最多保留约 150 MB，防止公网异常流量造成日志无限增长。
-- Coturn 不再创建 `/var/log/crossdesk/turn.log`，避免同一批日志同时写入文件和 Docker 日志。
+页面可见时每 5 秒刷新数据，时长每秒更新显示。管理登录会话保存在内存中，默认有效期 8 小时；服务重启后需要重新登录。后台使用 HTTPS 登录 Cookie。
 
-如果从旧的 `docker run` 部署迁移，并希望继续使用 `/root/workspace/server_config`，可在 `.env` 中设置：
+**可选地域分布：** 默认关闭 IP 地理查询。在 `.env` 中启用 `CROSSDESK_GEOIP_LOOKUP=1` 并填写 `CROSSDESK_GEOIP_KEY` 后，公网连接 IP 会发送给 IP2Location 查询国家和省 / 州。图表统计当前在线客户端，包含 Web、排除 `C-*` 控制分身；未解析位置单独统计。关闭查询或无可用结果时，地图不会显示已解析的分布。
 
-```dotenv
-CROSSDESK_DATA_DIR=/root/workspace/server_config
-CROSSDESK_LOG_DIR=/root/workspace/server_config/logs
-```
+连接 IP 和地域只作为在线状态保存在内存，不写入设备资料数据库。后台保留 IP2Location 归因链接；中国地图资源 [china-provinces.json](src/admin/web/china-provinces.json) 来自 ISC 许可的 `china-map-geojson@1.0.4`。
 
-这样原有的 `certs`、`db` 和 CrossDesk 日志目录都可以继续使用。Coturn 的高频运行日志仍由 Docker 限量轮转，不再写入该目录。
+<details>
+<summary>地域查询与后台资源的高级配置</summary>
 
-查看或导出 Coturn 日志：
+- `CROSSDESK_GEOIP_SCHEME`、`CROSSDESK_GEOIP_HOST`、`CROSSDESK_GEOIP_PORT`、`CROSSDESK_GEOIP_PATH` 配置查询端点；默认 HTTPS、`api.ip2location.io`、`443`、`/?key={key}&ip={ip}`。
+- `CROSSDESK_GEOIP_TIMEOUT_MS` 默认 `1200`；失败重试由 `CROSSDESK_GEOIP_FAILURE_TTL_MS` 和 `CROSSDESK_GEOIP_FAILURE_MAX_TTL_MS` 控制，默认从 `60000` 毫秒退避至 `1800000` 毫秒。
+- 成功结果缓存；失败按 IP 去重并退避重试，该 IP 已无在线设备时停止重试。
+- 前端源码位于 [src/admin/web](src/admin/web)，容器内为 `/crossdesk-server/admin`。自定义 `CROSSDESK_ADMIN_WEB_DIR` 时，还需在 Compose 的 `environment` 中显式传入并挂载对应目录；仅添加到 `.env` 不会自动传入容器。修改前端资源后重启服务以刷新资源缓存。
 
-```bash
-# 持续查看最近 200 行
-sudo docker logs -f --tail 200 crossdesk_coturn
+</details>
 
-# 查看最近一小时
-sudo docker logs --since 1h crossdesk_coturn
-
-# 需要保留某次事件时，手动导出到持久化日志目录
-sudo docker logs --since 1h crossdesk_coturn \
-  > /root/workspace/server_config/logs/coturn-export.log 2>&1
-```
-
-Coturn 的 Docker 日志会在删除容器时一起删除；需要长期留存的事件日志应在删除容器前导出，或接入集中日志系统。
-
-**注意**：
-
-- **服务器需开放端口：COTURN_PORT/udp，COTURN_PORT/tcp，MIN_PORT-MAX_PORT/udp，CROSSDESK_SERVER_PORT/tcp。**
-- Coturn 使用 `EXTERNAL_IP/INTERNAL_IP` 映射，适用于云服务器公网 NAT 场景。
-- 两个容器的 Docker stdout/stderr 日志均限制为最多 3 个 50 MB 文件。
-- 证书文件会在首次启动时自动生成并持久化到宿主机的 `/var/lib/crossdesk/certs` 路径下
-- 数据库文件会自动创建并持久化到宿主机的 `/var/lib/crossdesk/db/crossdesk-server.db` 路径下
-- CrossDesk 业务日志持久化到 `/var/log/crossdesk/`；Coturn 日志通过 `docker logs crossdesk_coturn` 查看并自动轮转。
-
-**权限注意**：如果 Docker 自动创建的目录权限不足（属于 root），容器内用户无法写入，会导致：
-  - 证书生成失败，容器启动脚本会报错退出
-  - 数据库目录创建失败，程序会抛出异常并崩溃
-  - 日志目录创建失败，日志文件无法写入（但程序可能继续运行）
-  
-**解决方案**：在启动容器前手动设置权限：
-```bash
-sudo mkdir -p /var/lib/crossdesk /var/log/crossdesk
-sudo chown -R $(id -u):$(id -g) /var/lib/crossdesk /var/log/crossdesk
-```
+<a id="stats"></a>
 
 ## 服务状态接口
 
-服务启动后，可通过同一 HTTPS 端口读取运行状态：
-
-官方 CA 部署示例：
+`GET /stats` 和 `GET /api/stats` 与 WSS 共用 HTTPS 端口，**无需管理登录**，返回汇总统计并允许跨域读取。可在服务器上使用以下命令检查；替换示例 IP，若调整了数据目录也需修改根证书路径：
 
 ```bash
-curl https://your-domain.example.com:9090/stats
+curl --fail --cacert /var/lib/crossdesk/certs/api.crossdesk.cn_root.crt \
+  https://203.0.113.10:9099/stats
 ```
 
-自签证书部署示例：
+使用受信任 CA 的域名证书时：
 
 ```bash
-curl --cacert /var/lib/crossdesk/certs/api.crossdesk.cn_root.crt \
-  https://your-server-ip:9090/stats
+curl --fail https://your-domain.example.com:9099/stats
 ```
 
-说明：
-- 官方 CA 证书通常已被系统信任，`curl` 无需额外指定 `--cacert`
-- 自签证书需要显式指定根证书 `api.crossdesk.cn_root.crt`
-- 请求地址必须与服务端证书中的域名或 IP 一致，不能随意替换为 `127.0.0.1`
+| 字段 | 含义 |
+| --- | --- |
+| `online_device_count` | 当前在线设备数，排除 `web-*` 与 `C-*` |
+| `online_web_client_count` | 当前在线 `web-*` 客户端数 |
+| `active_connection_count` | 活动远控连接数，按 host 与各 guest 的连接分别计数 |
+| `online_duration_seconds` | 当前在线设备的本次在线时长合计 |
+| `total_online_seconds` | 设备累计在线时长，包含当前在线时段 |
+| `total_control_seconds` / `total_controlled_seconds` | 累计控制 / 被控制时长，包含进行中的会话 |
 
-也支持路径 `/api/stats`，返回示例：
+时长单位为秒。管理后台的明细接口使用 `/api/admin/*`，需要管理登录；公共状态接口不会返回设备明细。
 
-```json
-{
-  "online_device_count": 12,
-  "online_web_client_count": 2,
-  "active_connection_count": 3,
-  "online_duration_seconds": 86400,
-  "total_online_seconds": 259200,
-  "total_control_seconds": 3600,
-  "total_controlled_seconds": 7200
-}
-```
+<a id="operations"></a>
 
-- `online_device_count`：当前在线设备数，不包含临时 `web-*` 客户端和 `C-*` 分身客户端
-- `online_web_client_count`：当前在线 Web 客户端数，仅统计临时 `web-*` 客户端
-- `active_connection_count`：当前处于连接中的会话数，按各 host 当前连接的 guest 数汇总；guest 自身登录或加入产生的连接不另行计数
-- `online_duration_seconds`：当前在线设备本次在线时长的总和，不包含临时 `web-*` 客户端和 `C-*` 分身客户端
-- `total_online_seconds`：设备累计在线时长的总和，包含当前仍在线设备的本次在线时长
-- `total_control_seconds`：设备作为控制端的累计远控时长总和，包含当前仍在进行的远控会话
-- `total_controlled_seconds`：设备作为被控端的累计远控时长总和，包含当前仍在进行的远控会话
-- 响应已带 `Access-Control-Allow-Origin: *`，可直接被网页端 `fetch` 调用
+## 维护与排查
 
-## 证书文件
-如果使用项目自带的自签证书方案，可在宿主机的 `/var/lib/crossdesk/certs` 路径下找到根证书 `api.crossdesk.cn_root.crt`，下载到你的客户端主机，并在客户端的**自托管服务器设置**中选择相应的**证书文件路径**。
+### 查看日志与更新
 
-如果使用官方 CA 证书，则通常不需要单独分发上述根证书，客户端和 `curl` 会直接使用系统信任链校验证书。
-
-## 后台管理页面
-
-服务端可以在同一个 HTTPS 端口提供内置后台管理页面，访问路径为 `/admin`。
-
-启动前同时设置以下两个环境变量即可启用后台管理：
+在配置目录执行：
 
 ```bash
-ADMIN_USERNAME=admin
-ADMIN_PASSWORD=change-this-password
+sudo docker compose ps
+sudo docker compose logs --tail 100 crossdesk-server coturn
 ```
 
-Compose 示例：在 `.env` 中设置：
-
-```dotenv
-ADMIN_USERNAME=admin
-ADMIN_PASSWORD=change-this-password
-```
-
-然后应用配置：
+更新时先备份，再修改 `.env` 中的固定镜像 tag，并使用与该版本匹配的部署文件：
 
 ```bash
-sudo docker compose up -d
+sudo docker compose config -q
+sudo docker compose pull
+sudo docker compose up -d --no-build
 ```
 
-启动后打开：
+`docker compose restart` 用于重启现有容器，不会应用修改后的环境变量或镜像。业务日志写入 `${CROSSDESK_LOG_DIR}` 并同时输出到控制台；Coturn 日志通过 `docker compose logs coturn` 查看。两个容器的控制台日志均按 3 个、每个 50 MB 轮转。业务文件日志另行轮转，多次重启会产生新的日志组，需定期清理或归档。
 
-```text
-https://your-domain.example.com:9090/admin
+### 备份与迁移
+
+备份 `.env`、`compose.yaml` 及 `${CROSSDESK_DATA_DIR}` 下的 `certs/` 和 `db/`；备份包含密钥与设备数据库。以下示例使用默认数据目录，在停止服务后打包，期间远程连接会中断：
+
+```bash
+sudo docker compose stop
+backup_file="crossdesk-backup-$(date +%Y%m%d-%H%M%S).tar.gz"
+sudo tar -czf "$backup_file" .env compose.yaml -C /var/lib/crossdesk certs db
+sudo docker compose up -d --no-build
 ```
 
-后台页面会显示在线设备数、在线 Web 客户端数、活动远控会话、累计在线时长、累计控制时长和累计被控时长，并支持断开选中的远控会话。页面包含中国用户分布地图，可用颜色深浅查看各省份用户数量，国外用户会单独汇总展示。客户端状态列表默认展示在线 PC 客户端，并提供在线、远控中、离线、全部状态筛选以及 PC/Web 客户端类别选择；列表支持搜索、分页、排序和展开详情，并显示当前在线连接 IP 解析出的地理位置。客户端 IP 和地理位置只作为在线状态保存在内存中，不作为设备资料持久化到数据库；客户端在线时本次在线时长会实时刷新，下线后保留记录并显示最后在线时间点。
+迁移时在目标服务器恢复配套文件，核对挂载目录和权限，再启动。公网 IP / 域名改变时，还需更新证书与客户端地址。旧部署使用自定义数据目录时，把 `.env` 的 `CROSSDESK_DATA_DIR` 和 `CROSSDESK_LOG_DIR` 指向原有目录。
 
-IP 地理位置解析默认完全关闭。关闭时仅记录客户端 IP，不启动解析线程、不进行私网分类，也不输出 GeoIP 相关日志。设置 `CROSSDESK_GEOIP_LOOKUP=1` 后，内网、回环和 Docker 私有网段会显示为 `Private network`，公网 IP 则通过 `CROSSDESK_GEOIP_KEY` 配置的 IP2Location API key 查询；默认请求 `https://api.ip2location.io/?key={key}&ip={ip}`。解析只读取 `country_name`、`country_code` 和 `region_name`，并拼出类似 `California, United States of America` 的位置文本，不再读取或展示城市。地域统计只有在国家和可识别省份都缺失时才计入未解析。使用 IP2Location.io 免费计划或无 key API 时需要展示归因，后台地域分布区域会显示 `CrossDesk uses IP2Location.io IP geolocation web service.` 并链接到 `https://www.ip2location.io`。查询端点可通过 `CROSSDESK_GEOIP_SCHEME`、`CROSSDESK_GEOIP_HOST`、`CROSSDESK_GEOIP_PORT` 和 `CROSSDESK_GEOIP_PATH` 配置，其中路径里的 `{ip}` 和 `{key}` 会被替换。查询超时时间可通过 `CROSSDESK_GEOIP_TIMEOUT_MS` 调整，默认 1200ms。成功 IP 结果会缓存；失败结果不作为设备位置缓存，而是由后台 IP 队列按 IP 去重并按退避重新入队。重试时如果已没有在线设备使用该 IP，任务会直接丢弃。退避默认从 60000ms 开始翻倍，最高 1800000ms，可通过 `CROSSDESK_GEOIP_FAILURE_TTL_MS` 和 `CROSSDESK_GEOIP_FAILURE_MAX_TTL_MS` 调整。
+### 常见问题
 
-后台前端资源位于 `src/admin/web`，容器内默认复制到 `/crossdesk-server/admin`；如需使用自定义前端目录，可设置 `CROSSDESK_ADMIN_WEB_DIR`。中国地图边界数据 `china-provinces.json` 由 ISC 许可的 `china-map-geojson@1.0.4` 省级 GeoJSON 数据生成。
+| 现象 | 检查方向 |
+| --- | --- |
+| 配置校验失败 | 必填 IP 和两个密钥是否为空，配置文件是否来自同一 Release |
+| 证书生成 / 数据库写入失败 | 查看信令日志，确认挂载路径可写；默认镜像以 root 启动，只有修改容器用户等情况下才按实际 UID/GID 调整权限 |
+| Coturn 无法绑定地址 | `INTERNAL_IP` 是否属于宿主机网卡，端口是否被其他进程占用 |
+| 客户端 TLS 错误 | 系统根证书信任、证书有效期及 IP / 域名匹配；修改 IP 不会更新已有证书 |
+| 已连服务器但对端离线 | 两端是否使用同一服务，被控端是否运行，是否复制了当前 ID |
+| P2P 失败且无法中继 | 客户端中继选项、客户端版本、共享密钥一致性、TURN 与媒体端口是否放通 |
+| 后台未启用 / 登录失败 | 两个管理环境变量是否均已传入，是否重新创建容器，是否使用 HTTPS |
+| 地图无分布 | 地理查询是否启用、API key 和出站网络是否可用；默认关闭查询 |
+
+<a id="build"></a>
+
+## 从源码构建
+
+CI 在 **Ubuntu 22.04、amd64 / arm64** 上构建。安装 Git、C++17 编译工具链和 [Xmake](https://xmake.io/guide/quick-start.html)；第三方 C++ 依赖由 Xmake 下载。下面的 Linux 依赖命令与 CI 基线一致：
+
+```bash
+sudo apt-get update
+sudo apt-get install -y ca-certificates git curl unzip build-essential
+
+git clone https://github.com/kunkundi/crossdesk-server.git
+cd crossdesk-server
+xmake f -c -m release -y
+xmake b -vy crossdesk_server
+```
+
+首次构建前需确保 `xmake --version` 可用。其他系统的源码配置见 [xmake.lua](xmake.lua)，当前发布流程只提供 Linux 二进制与容器镜像。切换 Debug 使用 `xmake f -m debug`；`xmake r -d crossdesk_server` 表示使用调试器运行。
+
+### 构建自己的运行镜像
+
+Dockerfile **只打包已编译的 Linux 二进制**。先在与目标镜像架构相同的 Ubuntu 22.04 环境完成 Release 编译，再在仓库根目录执行：
+
+```bash
+# amd64；arm64 将 x86_64 替换为 arm64
+install -Dm755 build/linux/x86_64/release/crossdesk_server dist/crossdesk_server
+sudo docker build -f docker/dockerfile -t crossdesk-server:local .
+```
+
+在仓库根目录将 `.env.example` 复制为 `.env`，按部署章节填写配置，并将 `CROSSDESK_IMAGE` 设为 `crossdesk-server:local`。然后执行：
+
+```bash
+sudo docker compose config -q
+sudo docker compose pull coturn
+sudo docker compose up -d --no-build
+```
+
+直接运行二进制时，需要先准备 [main.cpp](src/main.cpp) 规定的 `/var/lib/crossdesk/certs`、数据库和日志路径；`CROSSDESK_DATA_DIR` / `CROSSDESK_LOG_DIR` 是 Compose 的宿主机挂载设置，不是二进制的路径覆盖参数。二进制不会自动生成证书。
+
+### CI 测试镜像
+
+默认分支成功构建后发布多架构 `crossdesk/crossdesk-server:test`，该 tag 随后续构建变化。测试环境可在 `.env` 中设置 `CROSSDESK_IMAGE=crossdesk/crossdesk-server:test`，再执行部署章节的拉取与启动命令。正式部署使用固定发布 tag。发布产物与镜像流程见 [CI 工作流](.github/workflows/build.yml)。
+
+## 反馈与许可
+
+[提交问题](https://github.com/kunkundi/crossdesk-server/issues)时请附上服务端 tag、两端客户端版本、部署方式及脱敏日志。CrossDesk Server 使用 [LGPL-3.0](LICENSE) 许可。
