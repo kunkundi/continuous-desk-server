@@ -8,6 +8,7 @@
 #define _TRANSMISSION_MANAGER_H_
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <condition_variable>
 #include <functional>
@@ -60,7 +61,7 @@ class TransmissionManager {
                          const std::string&, bool)>
           callback);
   void SetSessionTimeoutCallback(
-      std::function<void(const std::string&)> callback);
+      std::function<void(websocketpp::connection_hdl, const std::string&)> callback);
 
   bool ReleaseGuestFromTransmission(const std::string& guest_id);
   bool DisconnectTransmission(const std::string& transmission_id);
@@ -73,6 +74,8 @@ class TransmissionManager {
   std::string GetUserId(websocketpp::connection_hdl hdl);
 
   int UpdateWsHandleLastActiveTime(websocketpp::connection_hdl hdl);
+  void ExpireInactiveSessions(std::chrono::steady_clock::time_point now =
+                                 std::chrono::steady_clock::now());
   size_t GetActiveConnectionCount();
 
  private:
@@ -85,13 +88,14 @@ class TransmissionManager {
   std::map<websocketpp::connection_hdl, std::string,
            std::owner_less<websocketpp::connection_hdl>>
       ws_hdl_user_id_list_;
-  std::map<websocketpp::connection_hdl, uint32_t,
+  std::map<websocketpp::connection_hdl, std::chrono::steady_clock::time_point,
            std::owner_less<websocketpp::connection_hdl>>
       ws_hdl_last_active_time_map_;
   std::function<void(const std::string&, const std::string&,
                      const std::string&, bool)>
       remote_control_session_callback_;
-  std::function<void(const std::string&)> session_timeout_callback_;
+  std::function<void(websocketpp::connection_hdl, const std::string&)>
+      session_timeout_callback_;
 
   std::thread ws_hdl_alive_checker_;
   std::recursive_mutex ws_hdl_alive_checker_mutex_;

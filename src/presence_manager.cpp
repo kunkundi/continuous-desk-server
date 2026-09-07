@@ -126,6 +126,10 @@ void PresenceManager::OnLogin(const std::string& user_id,
 void PresenceManager::OnLogout(const std::string& device_id) {
   std::string user_id = device_id;
   {
+    std::lock_guard<std::mutex> lock(associations_mutex_);
+    associations_.erase(device_id);
+  }
+  {
     std::lock_guard<std::mutex> lock(online_devices_mutex_);
     if (ShouldTrackOnlineDevice(device_id)) {
       online_devices_.erase(device_id);
@@ -339,10 +343,13 @@ void PresenceManager::NotifyUserDevices(const std::string& user_id,
 }
 
 void PresenceManager::UpdateUserDevices(
-    const std::string& user_id, const std::vector<std::string>& device_ids) {
+    const std::string& user_id, const std::vector<std::string>& device_ids,
+    bool replace) {
   std::lock_guard<std::mutex> lock(associations_mutex_);
   auto& setref = associations_[user_id];
-  setref.clear();
+  if (replace) {
+    setref.clear();
+  }
   for (const auto& id : device_ids) {
     setref.insert(id);
   }

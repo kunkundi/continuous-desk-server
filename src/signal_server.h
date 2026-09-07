@@ -51,6 +51,8 @@ class SignalServer {
   context_ptr OnTlsInit(websocketpp::connection_hdl hdl);
   bool OnPing(websocketpp::connection_hdl hdl, std::string s);
   bool OnPong(websocketpp::connection_hdl hdl, std::string s);
+  void OnSessionTimeout(websocketpp::connection_hdl hdl,
+                        const std::string& device_id);
 
   void Run();
   void SendMsg(websocketpp::connection_hdl hdl, json message);

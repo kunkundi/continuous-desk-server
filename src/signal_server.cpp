@@ -196,11 +196,8 @@ SignalServer::SignalServer() {
         SendMsg(transmission_manager_->GetWsHandle(id), msg);
       });
   transmission_manager_->SetSessionTimeoutCallback(
-      [this](const std::string& device_id) {
-        if (presence_manager_) {
-          presence_manager_->OnLogout(device_id);
-        }
-      });
+      std::bind(&SignalServer::OnSessionTimeout, this, std::placeholders::_1,
+                std::placeholders::_2));
   admin_auth_ = std::make_unique<AdminAuth>();
   admin_controller_ = std::make_unique<AdminController>(
       admin_auth_.get(), presence_manager_.get(), transmission_manager_,
@@ -281,11 +278,8 @@ SignalServer::SignalServer(uint16_t port, std::string certs_dir,
         SendMsg(transmission_manager_->GetWsHandle(id), msg);
       });
   transmission_manager_->SetSessionTimeoutCallback(
-      [this](const std::string& device_id) {
-        if (presence_manager_) {
-          presence_manager_->OnLogout(device_id);
-        }
-      });
+      std::bind(&SignalServer::OnSessionTimeout, this, std::placeholders::_1,
+                std::placeholders::_2));
   admin_auth_ = std::make_unique<AdminAuth>();
   admin_controller_ = std::make_unique<AdminController>(
       admin_auth_.get(), presence_manager_.get(), transmission_manager_,
@@ -667,12 +661,27 @@ context_ptr SignalServer::OnTlsInit(websocketpp::connection_hdl hdl) {
 }
 
 bool SignalServer::OnPing(websocketpp::connection_hdl hdl, std::string s) {
+  transmission_manager_->UpdateWsHandleLastActiveTime(hdl);
   return true;
 }
 
 bool SignalServer::OnPong(websocketpp::connection_hdl hdl, std::string s) {
   transmission_manager_->UpdateWsHandleLastActiveTime(hdl);
   return true;
+}
+
+void SignalServer::OnSessionTimeout(websocketpp::connection_hdl hdl,
+                                     const std::string& device_id) {
+  if (!device_id.empty()) {
+    LOG_INFO("Device [{}] heartbeat timed out", device_id);
+    presence_manager_->OnLogout(device_id);
+    signal_negotiation_->OnWebClientDisconnect(device_id);
+  }
+  // A resumed peer must reconnect and log in, rather than keep receiving
+  // pongs on a socket that no longer has an authenticated session.
+  websocketpp::lib::error_code ec;
+  server_.close(hdl, websocketpp::close::status::going_away,
+                "Heartbeat timeout", ec);
 }
 
 void SignalServer::ScheduleRuntimeHeartbeat() {
@@ -873,12 +882,16 @@ void SignalServer::OnMessage(websocketpp::connection_hdl hdl,
         signal_negotiation_->client_info(hdl, j);
         break;
       case "recent_connections_presence"_H: {
-        std::string user_id;
-        if (!j.contains("user_id") || !j["user_id"].is_string()) {
-          LOG_ERROR("recent_connections missing field: user_id");
+        const std::string user_id = transmission_manager_->GetUserId(hdl);
+        if (user_id.empty() ||
+            (j.contains("user_id") && j["user_id"] != user_id)) {
+          LOG_WARN("Ignore presence request for unauthenticated or mismatched user");
           break;
         }
-        user_id = j["user_id"].get<std::string>();
+        if (j.contains("subscribe") && !j["subscribe"].is_boolean()) {
+          LOG_WARN("Ignore presence request with invalid subscribe field");
+          break;
+        }
         std::vector<std::string> device_ids;
         if (j.contains("devices") && j["devices"].is_array()) {
           for (auto& v : j["devices"]) {
@@ -886,7 +899,12 @@ void SignalServer::OnMessage(websocketpp::connection_hdl hdl,
           }
         }
         if (presence_manager_) {
-          presence_manager_->UpdateUserDevices(user_id, device_ids);
+          // New clients explicitly replace subscriptions or only query.
+          // Legacy queries may contain just one device, so merge them.
+          if (!j.contains("subscribe") || j["subscribe"].get<bool>()) {
+            presence_manager_->UpdateUserDevices(user_id, device_ids,
+                                                  j.contains("subscribe"));
+          }
           auto statuses = presence_manager_->BatchQuery(device_ids);
           json resp = {{"type", "presence"}, {"devices", json::array()}};
           for (const auto& p : statuses) {

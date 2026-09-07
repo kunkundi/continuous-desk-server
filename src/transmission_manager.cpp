@@ -247,6 +247,7 @@ bool TransmissionManager::BindUserToWsHandle(const std::string& user_id,
   std::lock_guard<std::recursive_mutex> lock(ws_hdl_alive_checker_mutex_);
   user_id_ws_hdl_list_[user_id] = hdl;
   ws_hdl_user_id_list_[hdl] = user_id;
+  UpdateWsHandleLastActiveTime(hdl);
   return true;
 }
 
@@ -259,7 +260,7 @@ void TransmissionManager::SetRemoteControlSessionCallback(
 }
 
 void TransmissionManager::SetSessionTimeoutCallback(
-    std::function<void(const std::string&)> callback) {
+    std::function<void(websocketpp::connection_hdl, const std::string&)> callback) {
   std::lock_guard<std::recursive_mutex> lock(ws_hdl_alive_checker_mutex_);
   session_timeout_callback_ = std::move(callback);
 }
@@ -381,6 +382,7 @@ std::string TransmissionManager::ReleaseUserSession(
 std::string TransmissionManager::ReleaseUserFromWsHandle(
     websocketpp::connection_hdl hdl) {
   std::lock_guard<std::recursive_mutex> lock(ws_hdl_alive_checker_mutex_);
+  ws_hdl_last_active_time_map_.erase(hdl);
   auto hdl_it = ws_hdl_user_id_list_.find(hdl);
   if (hdl_it == ws_hdl_user_id_list_.end()) {
     return "";
@@ -436,10 +438,12 @@ std::string TransmissionManager::GetUserId(websocketpp::connection_hdl hdl) {
 int TransmissionManager::UpdateWsHandleLastActiveTime(
     websocketpp::connection_hdl hdl) {
   std::lock_guard<std::recursive_mutex> lock(ws_hdl_alive_checker_mutex_);
-  uint32_t now = static_cast<uint32_t>(
-      std::chrono::system_clock::now().time_since_epoch() /
-      std::chrono::seconds(1));
-  ws_hdl_last_active_time_map_[hdl] = now;
+  // Only authenticated sessions belong in the presence watchdog. A late
+  // heartbeat must not revive a session that has already been released.
+  if (ws_hdl_user_id_list_.find(hdl) == ws_hdl_user_id_list_.end()) {
+    return -1;
+  }
+  ws_hdl_last_active_time_map_[hdl] = std::chrono::steady_clock::now();
   return 0;
 }
 
@@ -464,29 +468,26 @@ void TransmissionManager::AliveChecker() {
       break;
     }
 
-    uint32_t now = static_cast<uint32_t>(
-        std::chrono::system_clock::now().time_since_epoch() /
-        std::chrono::seconds(1));
+    ExpireInactiveSessions();
+  }
+}
 
-    for (auto it = ws_hdl_last_active_time_map_.begin();
-         it != ws_hdl_last_active_time_map_.end();) {
-      auto hdl = it->first;
-      auto sp = hdl.lock();
-
-      uint32_t last_active = it->second;
-      if (!sp || now - last_active > 10) {
-        if (sp) {
-          LOG_INFO("Inactive websocket [{}] detected", sp.get());
-        }
-
-        std::string user_id = ReleaseUserSession(hdl);
-        it = ws_hdl_last_active_time_map_.erase(it);
-        if (!user_id.empty() && session_timeout_callback_) {
-          session_timeout_callback_(user_id);
-        }
-      } else {
-        ++it;
+void TransmissionManager::ExpireInactiveSessions(
+    std::chrono::steady_clock::time_point now) {
+  std::lock_guard<std::recursive_mutex> lock(ws_hdl_alive_checker_mutex_);
+  for (auto it = ws_hdl_last_active_time_map_.begin();
+       it != ws_hdl_last_active_time_map_.end();) {
+    auto hdl = it->first;
+    if (hdl.expired() || now - it->second > std::chrono::seconds(10)) {
+      it = ws_hdl_last_active_time_map_.erase(it);
+      std::string user_id = ReleaseUserSession(hdl);
+      if (session_timeout_callback_) {
+        // Close every expired connection, including an old connection whose
+        // device has another live session. Only the final session logs out.
+        session_timeout_callback_(hdl, user_id);
       }
+    } else {
+      ++it;
     }
   }
 }

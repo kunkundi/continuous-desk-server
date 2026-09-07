@@ -57,7 +57,8 @@ class PresenceManager {
   void NotifyUserDevices(const std::string& user_id,
                          const std::string& changed_device_id, bool online);
   void UpdateUserDevices(const std::string& user_id,
-                         const std::vector<std::string>& device_ids);
+                         const std::vector<std::string>& device_ids,
+                         bool replace = true);
 
  private:
   std::function<void(websocketpp::connection_hdl, json)> send_msg_;
