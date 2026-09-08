@@ -40,28 +40,32 @@ std::string EnvString(const char* name) {
   return raw ? raw : "";
 }
 
-std::shared_ptr<TurnCredentialIssuer> CreateTurnCredentialIssuer() {
-  const std::string secret = EnvString("COTURN_AUTH_SECRET");
-  std::string host = EnvString("COTURN_PUBLIC_HOST");
-  if (host.empty()) {
-    host = EnvString("EXTERNAL_IP");
+std::shared_ptr<IceServerConfigIssuer> CreateIceServerConfigIssuer() {
+  const auto text = EnvString("CROSSDESK_ICE_SERVERS");
+  json servers = json::array();
+  if (!text.empty()) {
+    servers = json::parse(text, nullptr, false);
+    if (servers.is_discarded())
+      throw std::invalid_argument("Invalid CROSSDESK_ICE_SERVERS JSON");
+  } else {
+    auto host = EnvString("COTURN_PUBLIC_HOST");
+    if (host.empty()) host = EnvString("EXTERNAL_IP");
+    if (!host.empty()) {
+      if (host.find(':') != std::string::npos && host.front() != '[')
+        host = "[" + host + "]";
+      const auto endpoint =
+          host + ":" + std::to_string(EnvMillis("COTURN_PORT", 3478, 1, 65535));
+      servers.push_back({{"urls", {"stun:" + endpoint}}});
+      if (!EnvString("COTURN_AUTH_SECRET").empty())
+        servers.push_back({{"urls",
+                            {"turn:" + endpoint + "?transport=udp",
+                             "turn:" + endpoint + "?transport=tcp"}}});
+    }
   }
-  if (secret.empty() || host.empty()) {
-    LOG_WARN(
-        "Dynamic TURN credentials disabled: COTURN_AUTH_SECRET or TURN public "
-        "host is empty");
-    return nullptr;
-  }
-
-  const int port = EnvMillis("COTURN_PORT", 3478, 1, 65535);
-  const int ttl_seconds =
+  return std::make_shared<IceServerConfigIssuer>(
+      servers, EnvString("COTURN_AUTH_SECRET"),
       EnvMillis("COTURN_CREDENTIAL_TTL_SECONDS",
-                kDefaultTurnCredentialTtlSeconds, 60, 86400);
-  LOG_INFO("Dynamic TURN credentials enabled for [{}:{}], TTL [{}] seconds",
-           host, port, ttl_seconds);
-  return std::make_shared<TurnCredentialIssuer>(
-      secret, host, static_cast<uint16_t>(port),
-      static_cast<uint32_t>(ttl_seconds));
+                kDefaultTurnCredentialTtlSeconds, 60, 86400));
 }
 
 std::chrono::milliseconds GeoIpFailureRetryDelay(int failure_count) {
@@ -178,8 +182,8 @@ SignalServer::SignalServer() {
   RestorePersistedRemoteControlSessions(transmission_manager_,
                                         device_db_manager_.get());
   signal_negotiation_ = std::make_unique<SignalNegotiation>(
-      transmission_manager_, device_db_manager_.get(),
-      CreateTurnCredentialIssuer());
+      transmission_manager_, device_db_manager_.get(), nullptr,
+      CreateIceServerConfigIssuer());
   signal_negotiation_->SetSendMsgCallback(std::bind(&SignalServer::SendMsg,
                                                     this, std::placeholders::_1,
                                                     std::placeholders::_2));
@@ -260,8 +264,8 @@ SignalServer::SignalServer(uint16_t port, std::string certs_dir,
   RestorePersistedRemoteControlSessions(transmission_manager_,
                                         device_db_manager_.get());
   signal_negotiation_ = std::make_unique<SignalNegotiation>(
-      transmission_manager_, device_db_manager_.get(),
-      CreateTurnCredentialIssuer());
+      transmission_manager_, device_db_manager_.get(), nullptr,
+      CreateIceServerConfigIssuer());
   signal_negotiation_->SetSendMsgCallback(std::bind(&SignalServer::SendMsg,
                                                     this, std::placeholders::_1,
                                                     std::placeholders::_2));
@@ -796,7 +800,8 @@ void SignalServer::Run() {
 
 void SignalServer::SendMsg(websocketpp::connection_hdl hdl, json message) {
   if (hdl.expired()) {
-    LOG_ERROR("Destination hdl invalid, msg: {}", message.dump());
+    LOG_ERROR("Destination hdl invalid for message type [{}]",
+              message.value("type", "unknown"));
     return;
   }
 

@@ -2,6 +2,7 @@
 
 #include <openssl/sha.h>
 
+#include <algorithm>
 #include <iomanip>
 #include <sstream>
 #include <utility>
@@ -61,18 +62,25 @@ std::string PasswordFingerprint(const std::string& password) {
 SignalNegotiation::SignalNegotiation(
     std::shared_ptr<TransmissionManager> transmission_manager,
     DeviceDBManager* device_db,
-    std::shared_ptr<TurnCredentialIssuer> turn_credential_issuer)
+    std::shared_ptr<TurnCredentialIssuer> turn_credential_issuer,
+    std::shared_ptr<IceServerConfigIssuer> ice_config_issuer)
     : transmission_manager_(transmission_manager),
       device_db_manager_(device_db),
-      turn_credential_issuer_(std::move(turn_credential_issuer)) {}
+      turn_credential_issuer_(std::move(turn_credential_issuer)),
+      ice_config_issuer_(std::move(ice_config_issuer)) {}
 
 SignalNegotiation::~SignalNegotiation() {}
 
-void SignalNegotiation::AddTurnCredentials(
-    json& message, const std::string& user_id) const {
-  if (!turn_credential_issuer_ || user_id.empty()) {
-    return;
+bool SignalNegotiation::AddTurnCredentials(json& message,
+                                           const std::string& user_id) const {
+  if (user_id.empty()) return false;
+  if (ice_config_issuer_) {
+    auto config = ice_config_issuer_->Issue(user_id);
+    if (!config.contains("turn")) return false;
+    message["turn"] = std::move(config["turn"]);
+    return true;
   }
+  if (!turn_credential_issuer_) return false;
 
   const TurnCredentials credentials = turn_credential_issuer_->Issue(user_id);
   message["turn"] = {{"host", credentials.host},
@@ -80,6 +88,25 @@ void SignalNegotiation::AddTurnCredentials(
                      {"username", credentials.username},
                      {"password", credentials.password},
                      {"expires_at", credentials.expires_at}};
+  return true;
+}
+
+void SignalNegotiation::AddLoginIceConfig(json& message, const json& request,
+                                          const std::string& user_id) const {
+  if (ice_config_issuer_) message["ice_config_version"] = 1;
+  const auto version = request.find("ice_config_version");
+  if (!ice_config_issuer_ || version == request.end() ||
+      !version->is_number_integer() || *version != 1)
+    AddTurnCredentials(message, user_id);
+}
+
+void SignalNegotiation::AddConnectionIceConfig(
+    json& message, const std::string& user_id) const {
+  if (ice_config_issuer_) {
+    message.update(ice_config_issuer_->Issue(user_id));
+  } else {
+    AddTurnCredentials(message, user_id);
+  }
 }
 
 bool SignalNegotiation::login_user(websocketpp::connection_hdl hdl,
@@ -154,7 +181,7 @@ bool SignalNegotiation::login_user(websocketpp::connection_hdl hdl,
       json message = {{"type", "login"},
                       {"user_id", return_host_id},
                       {"status", "success"}};
-      AddTurnCredentials(message, ret_host_id);
+      AddLoginIceConfig(message, j, ret_host_id);
       send_msg_(hdl, message);
     } else {
       json message = {
@@ -169,7 +196,7 @@ bool SignalNegotiation::login_user(websocketpp::connection_hdl hdl,
     if (success) {
       json message = {
           {"type", "login"}, {"user_id", host_id}, {"status", "success"}};
-      AddTurnCredentials(message, host_id);
+      AddLoginIceConfig(message, j, host_id);
       send_msg_(hdl, message);
     } else {
       json message = {
@@ -361,6 +388,10 @@ bool SignalNegotiation::join_transmission(websocketpp::connection_hdl hdl,
       return true;
     }
 
+    if (transmission_manager_->GetUserId(hdl) != user_id) {
+      LOG_WARN("Reject connection request with unauthenticated sender");
+      return false;
+    }
     transmission_manager_->BindGuestToTransmission(user_id, transmission_id);
 
     json message = {{"type", "user_join_transmission"},
@@ -368,7 +399,7 @@ bool SignalNegotiation::join_transmission(websocketpp::connection_hdl hdl,
                     {"user_id", user_id},
                     {"status", "success"}};
 
-    AddTurnCredentials(message, host_id);
+    AddConnectionIceConfig(message, host_id);
     send_msg_(host_hdl, message);
   } else if (-1 == ret) {
     LOG_ERROR("Password incorrect for transmission id [{}]",
@@ -403,7 +434,21 @@ bool SignalNegotiation::offer(websocketpp::connection_hdl hdl, const json& j) {
     return false;
   }
 
-  transmission_manager_->BindGuestToTransmission(user_id, transmission_id);
+  // Credentials are issued only to authenticated participants of an authorized
+  // join.
+  const auto host_id =
+      transmission_manager_->GetHostIdOfTransmission(transmission_id);
+  const auto members =
+      transmission_manager_->GetAllUserIdOfTransmission(transmission_id);
+  if (user_id == remote_user_id ||
+      (user_id != host_id && remote_user_id != host_id) ||
+      transmission_manager_->GetUserId(hdl) != user_id ||
+      std::find(members.begin(), members.end(), user_id) == members.end() ||
+      std::find(members.begin(), members.end(), remote_user_id) ==
+          members.end()) {
+    LOG_WARN("Reject offer outside an authorized transmission");
+    return false;
+  }
 
   websocketpp::connection_hdl destination_hdl =
       transmission_manager_->GetWsHandle(remote_user_id);
@@ -416,7 +461,7 @@ bool SignalNegotiation::offer(websocketpp::connection_hdl hdl, const json& j) {
         {"remote_user_id", user_id},
         {"sdp", sdp},
     };
-    AddTurnCredentials(message, remote_user_id);
+    AddConnectionIceConfig(message, remote_user_id);
     LOG_INFO("[{}] send offer to [{}]", user_id, remote_user_id);
     send_msg_(destination_hdl, message);
 
@@ -602,12 +647,11 @@ bool SignalNegotiation::turn_credentials(websocketpp::connection_hdl hdl,
   if (user_id.empty()) {
     message["status"] = "fail";
     message["reason"] = "Not authenticated";
-  } else if (!turn_credential_issuer_) {
+  } else if (AddTurnCredentials(message, user_id)) {
+    message["status"] = "success";
+  } else {
     message["status"] = "fail";
     message["reason"] = "TURN credentials are not configured";
-  } else {
-    message["status"] = "success";
-    AddTurnCredentials(message, user_id);
   }
   send_msg_(hdl, message);
   return true;
